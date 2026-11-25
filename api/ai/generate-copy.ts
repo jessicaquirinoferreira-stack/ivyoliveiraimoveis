@@ -1,5 +1,5 @@
 import type { ServerResponse } from 'http';
-import { ApiRequest, handleGenerateCopy, sendJson } from '../_shared';
+import { ApiRequest, handleGenerateCopy, sendJson } from '../_shared.js';
 
 export default async function handler(req: ApiRequest, res: ServerResponse) {
   if (req.method !== 'POST') {

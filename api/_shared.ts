@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
+import { fileURLToPath } from 'url';
 import { GoogleGenAI, Type } from '@google/genai';
 import { put, del } from '@vercel/blob';
 import { handleUpload, type HandleUploadBody } from '@vercel/blob/client';
@@ -15,9 +16,11 @@ export interface FirebaseClientPublicConfig {
 }
 
 export function loadFirebasePublicConfig(): FirebaseClientPublicConfig {
+  const currentDir = path.dirname(fileURLToPath(import.meta.url));
   const candidatePaths = [
     path.resolve(process.cwd(), 'firebase-applet-config.json'),
     path.resolve(process.cwd(), '..', 'firebase-applet-config.json'),
+    path.resolve(currentDir, '..', 'firebase-applet-config.json'),
   ];
   for (const p of candidatePaths) {
     if (fs.existsSync(p)) {
@@ -380,6 +383,12 @@ export async function handleBlobUpload(
     });
   } catch (err) {
     console.error('Upload error:', err);
+    const msg = err instanceof Error ? err.message.toLowerCase() : '';
+    if (msg.includes('token') || msg.includes('unauthorized') || msg.includes('forbidden') || msg.includes('access denied')) {
+      return sendJson(res, 502, {
+        error: 'BLOB_READ_WRITE_TOKEN inválido ou sem permissão na Vercel. Verifique a variável de ambiente do projeto.',
+      });
+    }
     return sendJson(res, 500, { error: 'Falha ao armazenar o arquivo no servidor.' });
   }
 }

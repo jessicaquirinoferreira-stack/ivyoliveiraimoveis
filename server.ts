@@ -10,7 +10,7 @@ import {
   handleBlobUpload,
   handleGenerateCopy,
   handleHealth,
-} from './api/_shared';
+} from './api/_shared.js';
 
 dotenv.config();
 

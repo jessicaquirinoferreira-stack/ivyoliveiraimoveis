@@ -502,6 +502,7 @@ export async function uploadMediaToServer(params: {
   const capabilities = await getServerMediaCapabilities();
 
   // Direct client-side streaming to Vercel Blob when configured (no 4.5 MB serverless body limit)
+  let directUploadError: unknown = null;
   if (capabilities.vercelBlob && capabilities.clientDirectUpload) {
     try {
       params.onProgress?.('Enviando para Vercel Blob...');
@@ -526,6 +527,7 @@ export async function uploadMediaToServer(params: {
         storageProvider: 'vercel-blob',
       };
     } catch (err) {
+      directUploadError = err;
       // If file fits serverless JSON fallback (< 3 MB), try server upload endpoint before surfacing error
       if (blobToUpload.size > 3 * 1024 * 1024) {
         throw err instanceof Error ? err : new Error('Falha ao enviar arquivo para o Vercel Blob.');
@@ -551,8 +553,21 @@ export async function uploadMediaToServer(params: {
   });
 
   if (!resp.ok) {
-    const err = await resp.json().catch(() => ({}));
-    throw new Error(err.error || 'Falha no upload de mídia.');
+    const contentType = resp.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      const err = await resp.json().catch(() => ({}));
+      if (err?.error) throw new Error(err.error);
+    }
+    if (resp.status === 413) {
+      throw new Error('Arquivo muito grande para envio direto ao servidor. Verifique o Vercel Blob nas variáveis de ambiente.');
+    }
+    if (resp.status === 503) {
+      throw new Error('Armazenamento Vercel Blob não configurado. Adicione BLOB_READ_WRITE_TOKEN nas variáveis de ambiente da Vercel.');
+    }
+    if (directUploadError instanceof Error && directUploadError.message) {
+      throw new Error(directUploadError.message);
+    }
+    throw new Error(`Falha no upload de mídia (HTTP ${resp.status}).`);
   }
   return resp.json();
 }
