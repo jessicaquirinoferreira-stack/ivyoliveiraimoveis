@@ -34,7 +34,7 @@ import {
   Testimonial,
   UserProfile,
 } from '../types/realestate';
-import { generateSafeId } from '../utils/formatters';
+import { generateSafeId, slugify } from '../utils/formatters';
 
 function cleanUndefined<T extends Record<string, unknown>>(obj: T): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -44,6 +44,29 @@ function cleanUndefined<T extends Record<string, unknown>>(obj: T): Record<strin
     }
   }
   return out;
+}
+
+function clampStr(val: unknown, maxLen: number): string {
+  if (typeof val !== 'string') return '';
+  return val.slice(0, maxLen);
+}
+
+function clampSlug(val: unknown, fallback = 'item'): string {
+  return slugify(typeof val === 'string' && val.trim() ? val : fallback).slice(0, 155);
+}
+
+function clampStrArray(val: unknown, maxItems: number, maxItemLen = 180): string[] {
+  if (!Array.isArray(val)) return [];
+  return val
+    .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    .slice(0, maxItems)
+    .map((s) => s.slice(0, maxItemLen));
+}
+
+function clampNumber(val: unknown, min = 0): number {
+  const n = Number(val);
+  if (!Number.isFinite(n) || n < min) return min;
+  return n;
 }
 
 // Auto-provision admin, user profile, and default Ivy Oliveira tenant on login
@@ -147,13 +170,21 @@ export async function bootstrapUserAndTenant(user: User): Promise<{
           title: d.title?.replace(/Curadoria Arquitetônica/gi, 'Seleção Arquitetônica').replace(/Curadoria/gi, 'Consultoria'),
         })),
       };
+      const useDefaultLogo =
+        !existing.logoUrl ||
+        existing.logoUrl.includes('wxmntYHq') ||
+        existing.logoUrl.includes('logo_ivy_oliveira.png');
+      const useDefaultFavicon =
+        !existing.faviconUrl ||
+        existing.faviconUrl.includes('wxmntYHq') ||
+        existing.faviconUrl.includes('logo_ivy_oliveira.png');
       tenant =
         profile.tenantId === DEFAULT_TENANT_ID
           ? {
               ...DEFAULT_TENANT,
               ...normalizedExisting,
-              logoUrl: existing.logoUrl || DEFAULT_TENANT.logoUrl,
-              faviconUrl: existing.faviconUrl || DEFAULT_TENANT.faviconUrl,
+              logoUrl: useDefaultLogo ? DEFAULT_TENANT.logoUrl : existing.logoUrl,
+              faviconUrl: useDefaultFavicon ? DEFAULT_TENANT.faviconUrl : existing.faviconUrl,
               aboutPhotoUrl: useDefaultAbout ? DEFAULT_TENANT.aboutPhotoUrl : existing.aboutPhotoUrl,
             }
           : normalizedExisting;
@@ -189,13 +220,21 @@ export function subscribePublicTenant(
             title: d.title?.replace(/Curadoria Arquitetônica/gi, 'Seleção Arquitetônica').replace(/Curadoria/gi, 'Consultoria'),
           })),
         };
+        const useDefaultLogo =
+          !loaded.logoUrl ||
+          loaded.logoUrl.includes('wxmntYHq') ||
+          loaded.logoUrl.includes('logo_ivy_oliveira.png');
+        const useDefaultFavicon =
+          !loaded.faviconUrl ||
+          loaded.faviconUrl.includes('wxmntYHq') ||
+          loaded.faviconUrl.includes('logo_ivy_oliveira.png');
         onData(
           tenantId === DEFAULT_TENANT_ID
             ? {
                 ...DEFAULT_TENANT,
                 ...normalizedLoaded,
-                logoUrl: loaded.logoUrl || DEFAULT_TENANT.logoUrl,
-                faviconUrl: loaded.faviconUrl || DEFAULT_TENANT.faviconUrl,
+                logoUrl: useDefaultLogo ? DEFAULT_TENANT.logoUrl : loaded.logoUrl,
+                faviconUrl: useDefaultFavicon ? DEFAULT_TENANT.faviconUrl : loaded.faviconUrl,
                 aboutPhotoUrl: useDefaultAbout ? DEFAULT_TENANT.aboutPhotoUrl : loaded.aboutPhotoUrl,
               }
             : normalizedLoaded
@@ -229,9 +268,43 @@ export async function listTenants(isAdmin: boolean, ownerUid?: string): Promise<
 export async function updateTenantSettings(tenantId: string, updates: Partial<Tenant>): Promise<void> {
   const path = `tenants/${tenantId}`;
   try {
-    const safeUpdates = cleanUndefined(updates as Record<string, unknown>);
+    const safeUpdates = cleanUndefined({
+      ...updates,
+      brandName: updates.brandName !== undefined ? clampStr(updates.brandName, 120) : undefined,
+      brokerName: updates.brokerName !== undefined ? clampStr(updates.brokerName, 120) : undefined,
+      creci: updates.creci !== undefined ? clampStr(updates.creci, 60) : undefined,
+      city: updates.city !== undefined ? clampStr(updates.city, 80) : undefined,
+      state: updates.state !== undefined ? clampStr(updates.state, 20) : undefined,
+      regions: updates.regions !== undefined ? clampStrArray(updates.regions, 30, 80) : undefined,
+      whatsapp: updates.whatsapp !== undefined ? clampStr(updates.whatsapp, 30) : undefined,
+      phone: updates.phone !== undefined ? clampStr(updates.phone, 30) : undefined,
+      email: updates.email !== undefined ? clampStr(updates.email, 200) : undefined,
+      instagramHandle: updates.instagramHandle !== undefined ? clampStr(updates.instagramHandle, 80) : undefined,
+      instagramUrl: updates.instagramUrl !== undefined ? clampStr(updates.instagramUrl, 500) : undefined,
+      logoUrl: updates.logoUrl !== undefined ? clampStr(updates.logoUrl, 1000) : undefined,
+      faviconUrl: updates.faviconUrl !== undefined ? clampStr(updates.faviconUrl, 1000) : undefined,
+      heroTitle: updates.heroTitle !== undefined ? clampStr(updates.heroTitle, 200) : undefined,
+      heroSubtitle: updates.heroSubtitle !== undefined ? clampStr(updates.heroSubtitle, 500) : undefined,
+      heroCtaText: updates.heroCtaText !== undefined ? clampStr(updates.heroCtaText, 60) : undefined,
+      heroImages: updates.heroImages !== undefined ? clampStrArray(updates.heroImages, 10, 1000) : undefined,
+      aboutHeadline: updates.aboutHeadline !== undefined ? clampStr(updates.aboutHeadline, 200) : undefined,
+      aboutBio: updates.aboutBio !== undefined ? clampStr(updates.aboutBio, 4000) : undefined,
+      aboutPhotoUrl: updates.aboutPhotoUrl !== undefined ? clampStr(updates.aboutPhotoUrl, 1000) : undefined,
+      aboutExperienceYears: updates.aboutExperienceYears !== undefined ? clampStr(updates.aboutExperienceYears, 40) : undefined,
+      specialties: updates.specialties !== undefined ? clampStrArray(updates.specialties, 20, 120) : undefined,
+      differentials: updates.differentials !== undefined ? updates.differentials.slice(0, 12) : undefined,
+      seoTitle: updates.seoTitle !== undefined ? clampStr(updates.seoTitle, 160) : undefined,
+      seoDescription: updates.seoDescription !== undefined ? clampStr(updates.seoDescription, 320) : undefined,
+      ga4Id: updates.ga4Id !== undefined ? clampStr(updates.ga4Id, 60) : undefined,
+      gtmId: updates.gtmId !== undefined ? clampStr(updates.gtmId, 60) : undefined,
+      gscVerification: updates.gscVerification !== undefined ? clampStr(updates.gscVerification, 120) : undefined,
+      googleAdsId: updates.googleAdsId !== undefined ? clampStr(updates.googleAdsId, 60) : undefined,
+      lgpdPrivacyText: updates.lgpdPrivacyText !== undefined ? clampStr(updates.lgpdPrivacyText, 6000) : undefined,
+      customDomain: updates.customDomain !== undefined ? clampStr(updates.customDomain, 200) : undefined,
+    } as Record<string, unknown>);
     delete safeUpdates.id;
     delete safeUpdates.ownerUid;
+    delete safeUpdates.slug;
     delete safeUpdates.createdAt;
     await updateDoc(doc(db, 'tenants', tenantId), {
       ...safeUpdates,
@@ -298,20 +371,51 @@ export async function saveProperty(
 ): Promise<void> {
   const path = `properties/${property.id}`;
   try {
+    const sanitized = cleanUndefined({
+      ...property,
+      slug: clampSlug(property.slug || property.title, property.code || 'imovel'),
+      code: clampStr(property.code || 'IMV', 40),
+      title: clampStr(property.title, 180),
+      price: clampNumber(property.price, 0),
+      condoFee: clampNumber(property.condoFee, 0),
+      iptu: clampNumber(property.iptu, 0),
+      city: clampStr(property.city, 80),
+      neighborhood: clampStr(property.neighborhood, 100),
+      address: clampStr(property.address, 240),
+      builtArea: clampNumber(property.builtArea, 0),
+      totalArea: clampNumber(property.totalArea, 0),
+      bedrooms: clampNumber(property.bedrooms, 0),
+      suites: clampNumber(property.suites, 0),
+      bathrooms: clampNumber(property.bathrooms, 0),
+      parkingSpaces: clampNumber(property.parkingSpaces, 0),
+      description: clampStr(property.description, 8000),
+      summary: clampStr(property.summary, 600),
+      features: clampStrArray(property.features, 40, 200),
+      differentials: clampStrArray(property.differentials, 25, 200),
+      coverImage: clampStr(property.coverImage, 1000),
+      images: Array.isArray(property.images) ? property.images.slice(0, 50) : [],
+      videos: Array.isArray(property.videos) ? property.videos.slice(0, 12) : [],
+      panorama360Images: Array.isArray(property.panorama360Images) ? property.panorama360Images.slice(0, 20) : [],
+      seoTitle: clampStr(property.seoTitle, 160),
+      seoDescription: clampStr(property.seoDescription, 320),
+      socialCopy: clampStr(property.socialCopy, 2000),
+      whatsappCopy: clampStr(property.whatsappCopy, 1000),
+      viewsCount: clampNumber(property.viewsCount, 0),
+    } as Record<string, unknown>);
+
     if (isNew) {
       await setDoc(doc(db, 'properties', property.id), {
-        ...cleanUndefined(property as unknown as Record<string, unknown>),
+        ...sanitized,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
     } else {
-      const payload = cleanUndefined(property as unknown as Record<string, unknown>);
-      delete payload.id;
-      delete payload.tenantId;
-      delete payload.ownerUid;
-      delete payload.createdAt;
+      delete sanitized.id;
+      delete sanitized.tenantId;
+      delete sanitized.ownerUid;
+      delete sanitized.createdAt;
       await updateDoc(doc(db, 'properties', property.id), {
-        ...payload,
+        ...sanitized,
         updatedAt: serverTimestamp(),
       });
     }
@@ -371,20 +475,38 @@ export async function saveDevelopment(
 ): Promise<void> {
   const path = `developments/${dev.id}`;
   try {
+    const sanitized = cleanUndefined({
+      ...dev,
+      slug: clampSlug(dev.slug || dev.name, 'empreendimento'),
+      name: clampStr(dev.name, 160),
+      developer: clampStr(dev.developer, 120),
+      city: clampStr(dev.city, 80),
+      neighborhood: clampStr(dev.neighborhood, 100),
+      deliveryDate: clampStr(dev.deliveryDate, 60),
+      priceFrom: clampNumber(dev.priceFrom, 0),
+      description: clampStr(dev.description, 8000),
+      technicalSpecs: clampStrArray(dev.technicalSpecs, 30, 200),
+      coverImage: clampStr(dev.coverImage, 1000),
+      images: Array.isArray(dev.images) ? dev.images.slice(0, 40) : [],
+      floorPlans: Array.isArray(dev.floorPlans) ? dev.floorPlans.slice(0, 20) : [],
+      videos: Array.isArray(dev.videos) ? dev.videos.slice(0, 10) : [],
+      seoTitle: clampStr(dev.seoTitle, 160),
+      seoDescription: clampStr(dev.seoDescription, 320),
+    } as Record<string, unknown>);
+
     if (isNew) {
       await setDoc(doc(db, 'developments', dev.id), {
-        ...cleanUndefined(dev as unknown as Record<string, unknown>),
+        ...sanitized,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
     } else {
-      const payload = cleanUndefined(dev as unknown as Record<string, unknown>);
-      delete payload.id;
-      delete payload.tenantId;
-      delete payload.ownerUid;
-      delete payload.createdAt;
+      delete sanitized.id;
+      delete sanitized.tenantId;
+      delete sanitized.ownerUid;
+      delete sanitized.createdAt;
       await updateDoc(doc(db, 'developments', dev.id), {
-        ...payload,
+        ...sanitized,
         updatedAt: serverTimestamp(),
       });
     }
@@ -444,20 +566,35 @@ export async function saveLandingPage(
 ): Promise<void> {
   const path = `landingPages/${lp.id}`;
   try {
+    const sanitized = cleanUndefined({
+      ...lp,
+      slug: clampSlug(lp.slug || lp.title, 'oferta'),
+      title: clampStr(lp.title, 180),
+      subtitle: clampStr(lp.subtitle, 400),
+      heroImage: clampStr(lp.heroImage, 1000),
+      description: clampStr(lp.description, 6000),
+      ctaText: clampStr(lp.ctaText, 80),
+      accentColor: clampStr(lp.accentColor, 30),
+      highlights: clampStrArray(lp.highlights, 15, 200),
+      viewsCount: clampNumber(lp.viewsCount, 0),
+      leadsCount: clampNumber(lp.leadsCount, 0),
+      seoTitle: clampStr(lp.seoTitle, 160),
+      seoDescription: clampStr(lp.seoDescription, 320),
+    } as Record<string, unknown>);
+
     if (isNew) {
       await setDoc(doc(db, 'landingPages', lp.id), {
-        ...cleanUndefined(lp as unknown as Record<string, unknown>),
+        ...sanitized,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
     } else {
-      const payload = cleanUndefined(lp as unknown as Record<string, unknown>);
-      delete payload.id;
-      delete payload.tenantId;
-      delete payload.ownerUid;
-      delete payload.createdAt;
+      delete sanitized.id;
+      delete sanitized.tenantId;
+      delete sanitized.ownerUid;
+      delete sanitized.createdAt;
       await updateDoc(doc(db, 'landingPages', lp.id), {
-        ...payload,
+        ...sanitized,
         updatedAt: serverTimestamp(),
       });
     }
@@ -516,20 +653,27 @@ export async function saveTestimonial(
   isNew: boolean
 ): Promise<void> {
   try {
+    const sanitized = cleanUndefined({
+      ...item,
+      clientName: clampStr(item.clientName, 120),
+      clientRole: clampStr(item.clientRole, 120),
+      quote: clampStr(item.quote, 1200),
+      propertyReference: clampStr(item.propertyReference, 160),
+    } as Record<string, unknown>);
+
     if (isNew) {
       await setDoc(doc(db, 'testimonials', item.id), {
-        ...cleanUndefined(item as unknown as Record<string, unknown>),
+        ...sanitized,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
     } else {
-      const payload = cleanUndefined(item as unknown as Record<string, unknown>);
-      delete payload.id;
-      delete payload.tenantId;
-      delete payload.ownerUid;
-      delete payload.createdAt;
+      delete sanitized.id;
+      delete sanitized.tenantId;
+      delete sanitized.ownerUid;
+      delete sanitized.createdAt;
       await updateDoc(doc(db, 'testimonials', item.id), {
-        ...payload,
+        ...sanitized,
         updatedAt: serverTimestamp(),
       });
     }

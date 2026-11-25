@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useRef, useState } from 'r
 import { onAuthStateChanged, User } from 'firebase/auth';
 import {
   auth,
+  changeAdminPassword,
   signInWithEmailPassword,
   signInWithGoogle,
   signOutFirebase,
@@ -24,6 +25,7 @@ interface AppContextValue {
   setActiveTenantId: (id: string) => void;
   firestoreConnected: boolean;
   loginWithEmailPassword: (email: string, password: string) => Promise<boolean>;
+  updateUserPassword: (currentPassword: string, newPassword: string) => Promise<void>;
   loginWithGoogle: () => Promise<void>;
   logout: () => Promise<void>;
   authError: string | null;
@@ -43,6 +45,10 @@ function mapFirebaseAuthError(err: unknown): string {
       return 'E-mail ou senha inválidos. Verifique suas credenciais e tente novamente.';
     case 'auth/invalid-email':
       return 'Informe um endereço de e-mail válido.';
+    case 'auth/weak-password':
+      return 'A nova senha deve ter no mínimo 6 caracteres.';
+    case 'auth/requires-recent-login':
+      return 'Por segurança, confirme sua senha atual ou faça login novamente antes de alterar a senha.';
     case 'auth/user-disabled':
       return 'Esta conta administrativa está desativada no Firebase Authentication.';
     case 'auth/too-many-requests':
@@ -131,6 +137,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const updateUserPassword = async (currentPassword: string, newPassword: string): Promise<void> => {
+    try {
+      await changeAdminPassword(currentPassword, newPassword);
+    } catch (err) {
+      throw new Error(mapFirebaseAuthError(err));
+    }
+  };
+
   const loginWithGoogle = async () => {
     setAuthError(null);
     setAuthSubmitting(true);
@@ -161,6 +175,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setActiveTenantId,
         firestoreConnected,
         loginWithEmailPassword,
+        updateUserPassword,
         loginWithGoogle,
         logout,
         authError,

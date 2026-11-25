@@ -83,7 +83,7 @@ export function AdminLogin({ onNavigate }: AdminLoginProps) {
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="admin@x.com"
+                placeholder="sandrodbillo@hotmail.com"
                 disabled={authSubmitting}
                 className="w-full pl-10 pr-4 py-3 text-sm bg-[var(--site-bg)] border border-[var(--site-border)] rounded-[var(--site-radius)] focus:outline-none focus:border-[var(--site-accent)] transition-colors disabled:opacity-60"
               />

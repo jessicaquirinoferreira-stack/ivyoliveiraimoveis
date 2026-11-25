@@ -327,7 +327,7 @@ export function CatalogPage({ search, onNavigate }: CatalogPageProps) {
           onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
           className="px-3 py-2 text-xs bg-[var(--site-surface)] border border-[var(--site-border)] rounded-[var(--site-radius)]"
         >
-          <option value="order">Ordenação curatorial</option>
+          <option value="order">Ordenação selecionada</option>
           <option value="price_asc">Menor preço</option>
           <option value="price_desc">Maior preço</option>
           <option value="area_desc">Maior área</option>

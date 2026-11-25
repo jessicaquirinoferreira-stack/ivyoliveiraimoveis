@@ -30,8 +30,8 @@ service cloud.firestore {
     }
     function isPrimaryAdminUid() {
       return isSignedIn() &&
-        request.auth.uid == '1rIIihBz4yZhUBbaEDfJXqqQ7x43' &&
-        request.auth.token.email == 'admin@x.com';
+        request.auth.uid == '6zWtrk2KMVaBY2kW9aGe4FjbPu13' &&
+        request.auth.token.email == 'sandrodbillo@hotmail.com';
     }
     function isVerified() {
       return isPrimaryAdminUid() || (isSignedIn() && request.auth.token.email_verified == true);

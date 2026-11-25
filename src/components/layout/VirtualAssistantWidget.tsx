@@ -98,10 +98,10 @@ function buildAssistantReply(
 
   if (/(imovel|imoveis|casa|apartamento|ap|cobertura|terreno|comercial|compra|comprar|alugar|aluguel|preco|valor)/.test(q)) {
     let targetPath = '/imoveis';
-    if (q.includes('cobertura')) targetPath = '/imoveis?tipo=cobertura';
-    else if (q.includes('casa')) targetPath = '/imoveis?tipo=casa';
-    else if (q.includes('apartamento') || /\bap\b/.test(q)) targetPath = '/imoveis?tipo=apartamento';
-    else if (q.includes('alugar') || q.includes('aluguel')) targetPath = '/imoveis?negocio=aluguel';
+    if (q.includes('cobertura')) targetPath = '/imoveis?type=cobertura';
+    else if (q.includes('casa')) targetPath = '/imoveis?type=casa';
+    else if (q.includes('apartamento') || /\bap\b/.test(q)) targetPath = '/imoveis?type=apartamento';
+    else if (q.includes('alugar') || q.includes('aluguel')) targetPath = '/imoveis?tx=aluguel';
 
     return {
       text: `Nosso acervo reúne imóveis selecionados em ${regionsText} com valores, fichas técnicas e visita virtual. Clique abaixo para ver as opções disponíveis ou fale conosco no WhatsApp e Instagram para atendimento sob medida.`,

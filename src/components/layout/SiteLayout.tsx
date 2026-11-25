@@ -83,7 +83,7 @@ export function SiteLayout({ currentPath, onNavigate, children }: SiteLayoutProp
                   alt={tenant.brandName}
                   referrerPolicy="no-referrer"
                   onError={() => setLogoError(true)}
-                  className="h-14 sm:h-16 w-auto max-w-[180px] object-contain bg-transparent select-none py-1"
+                  className="h-14 sm:h-[68px] w-auto max-w-[180px] object-contain bg-transparent select-none py-0.5"
                 />
                 <span className="sr-only">{tenant.brandName}</span>
               </>

@@ -155,6 +155,13 @@ export function HomePage({ onNavigate }: HomePageProps) {
     };
   }, []);
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      ScrollTrigger.refresh();
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [properties.length, developments.length, testimonials.length]);
+
   const featuredProperties = useMemo(() => {
     const featured = properties.filter((p) => p.featured);
     return (featured.length > 0 ? featured : properties).slice(0, 6);

@@ -173,10 +173,12 @@ export function PropertyEditorModal({ existingProperty, onClose }: PropertyEdito
           filename: file.name,
           mimeType: file.type,
           folder: propertyId,
+          isPanorama: target === 'panorama360',
           watermarkLogoUrl:
             target === 'photo'
-              ? tenant.logoUrl || '/src/assets/images/logo_ivy_oliveira.png'
+              ? tenant.logoUrl || '/logo-ivy-oliveira.png'
               : undefined,
+          onProgress: (label) => setFeedback(label),
         });
         uploaded.push({
           id: generateSafeId('img'),
@@ -235,8 +237,9 @@ export function PropertyEditorModal({ existingProperty, onClose }: PropertyEdito
         tenantId: activeTenantId,
         file,
         filename: file.name,
-        mimeType: file.type,
+        mimeType: file.type || 'video/mp4',
         folder: propertyId,
+        onProgress: (label) => setFeedback(label),
       });
       setVideos((prev) => [
         ...prev,
@@ -247,7 +250,7 @@ export function PropertyEditorModal({ existingProperty, onClose }: PropertyEdito
           isIllustrativeAi: false,
         },
       ]);
-      setFeedback('Vídeo anexado ao imóvel com sucesso.');
+      setFeedback('Vídeo comprimido mantendo alta qualidade e salvo no imóvel!');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao enviar vídeo.');
     } finally {
@@ -378,6 +381,7 @@ export function PropertyEditorModal({ existingProperty, onClose }: PropertyEdito
       });
       const uploaded = await uploadMediaToServer({
         tenantId: activeTenantId,
+        blob: enhanced.blob,
         base64Data: enhanced.base64,
         filename: `enhanced-${img.id}.webp`,
         mimeType: 'image/webp',
@@ -1445,10 +1449,11 @@ export function PropertyEditorModal({ existingProperty, onClose }: PropertyEdito
               <div className="pt-1 flex flex-wrap items-center gap-3 text-xs">
                 <label className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-[var(--site-border)] bg-[var(--site-surface)] rounded cursor-pointer">
                   <Upload className="w-3.5 h-3.5" />
-                  Enviar Vídeo MP4/WebM Próprio ({videos.length})
+                  {uploading ? 'Comprimindo e enviando vídeo...' : `Enviar Vídeo Próprio (${videos.length})`}
                   <input
                     type="file"
-                    accept="video/mp4,video/webm"
+                    accept="video/mp4,video/webm,video/quicktime,video/*"
+                    disabled={uploading}
                     className="hidden"
                     onChange={handleVideoFileUpload}
                   />
@@ -1475,6 +1480,16 @@ export function PropertyEditorModal({ existingProperty, onClose }: PropertyEdito
           </div>
 
           <div className="flex items-center gap-3">
+            {(status === 'sold' || status === 'rented') && (
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => handleSave(status)}
+                className="px-4 py-2 text-xs font-medium border border-[var(--site-accent)] text-[var(--site-accent)] rounded hover:bg-[var(--site-surface-alt)]"
+              >
+                {saving ? 'Salvando...' : `Salvar (${status === 'sold' ? 'Vendido' : 'Alugado'})`}
+              </button>
+            )}
             <button
               type="button"
               disabled={saving}

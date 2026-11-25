@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
 import {
   handleAnalyzePhotos,
+  handleBlobClientUpload,
   handleBlobDelete,
   handleBlobUpload,
   handleGenerateCopy,
@@ -69,6 +70,7 @@ async function startServer() {
     );
   });
 
+  app.post('/api/blob/client-upload', (req, res) => handleBlobClientUpload(req, res));
   app.post('/api/blob/upload', (req, res) => handleBlobUpload(req, res, UPLOAD_ROOT));
   app.delete('/api/blob/delete', (req, res) => handleBlobDelete(req, res, UPLOAD_ROOT));
   app.post('/api/ai/analyze-photos', (req, res) => handleAnalyzePhotos(req, res, UPLOAD_ROOT));

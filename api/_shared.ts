@@ -4,9 +4,10 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { GoogleGenAI, Type } from '@google/genai';
 import { put, del } from '@vercel/blob';
+import { handleUpload, type HandleUploadBody } from '@vercel/blob/client';
 
-export const PRIMARY_ADMIN_UID = '1rIIihBz4yZhUBbaEDfJXqqQ7x43';
-export const PRIMARY_ADMIN_EMAIL = 'admin@x.com';
+export const PRIMARY_ADMIN_UID = '6zWtrk2KMVaBY2kW9aGe4FjbPu13';
+export const PRIMARY_ADMIN_EMAIL = 'sandrodbillo@hotmail.com';
 
 export interface FirebaseClientPublicConfig {
   apiKey: string;
@@ -178,6 +179,22 @@ export function isAllowedRemoteUrl(rawUrl: string): boolean {
   }
 }
 
+const ALLOWED_MEDIA_MIME = [
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/avif',
+  'video/mp4',
+  'video/webm',
+  'video/quicktime',
+  'application/pdf',
+];
+
+function getBlobToken(): string | undefined {
+  const token = process.env.BLOB_READ_WRITE_TOKEN?.trim();
+  return token || undefined;
+}
+
 function getGenAIClient(): GoogleGenAI | null {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') return null;
@@ -196,7 +213,8 @@ export function handleHealth(res: ServerResponse): void {
   const geminiConfigured = Boolean(
     process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY'
   );
-  const blobConfigured = Boolean(process.env.BLOB_READ_WRITE_TOKEN);
+  const blobConfigured = Boolean(getBlobToken());
+  const blobStoreConfigured = Boolean(process.env.BLOB_STORE_ID?.trim() || blobConfigured);
   sendJson(res, 200, {
     ok: true,
     environment: process.env.VERCEL ? 'vercel' : 'node-server',
@@ -204,10 +222,66 @@ export function handleHealth(res: ServerResponse): void {
     capabilities: {
       geminiAi: geminiConfigured,
       vercelBlob: blobConfigured,
+      clientDirectUpload: blobConfigured,
+      blobStoreConfigured,
       storageMode: blobConfigured ? 'vercel-blob' : 'local-preview',
       virtualTourPro: true,
     },
   });
+}
+
+export async function handleBlobClientUpload(req: ApiRequest, res: ServerResponse): Promise<void> {
+  if (!checkRateLimit(req, 60, 60_000)) {
+    return sendJson(res, 429, { error: 'Muitas solicitações. Aguarde alguns instantes e tente novamente.' });
+  }
+  const token = getBlobToken();
+  if (!token) {
+    return sendJson(res, 503, {
+      error: 'BLOB_READ_WRITE_TOKEN não configurado no ambiente do servidor.',
+    });
+  }
+
+  try {
+    const body = await readJsonBody<HandleUploadBody>(req, 1024 * 1024);
+    if (!body || typeof body !== 'object' || !('type' in body)) {
+      return sendJson(res, 400, { error: 'Payload de upload inválido.' });
+    }
+
+    if (body.type === 'blob.generate-client-token') {
+      const user = await verifyFirebaseBearer(req);
+      if (!isAuthorizedApiUser(user)) {
+        return sendJson(res, 401, { error: 'Autenticação administrativa obrigatória para envio de mídia.' });
+      }
+
+      const rawPathname = String(body.payload?.pathname || '');
+      const segments = rawPathname.split('/').filter(Boolean);
+      if (
+        segments.length !== 3 ||
+        !isSafeId(segments[0]) ||
+        !isSafeId(segments[1]) ||
+        !/^[a-zA-Z0-9._-]{1,120}$/.test(segments[2])
+      ) {
+        return sendJson(res, 400, { error: 'Caminho de destino inválido para armazenamento.' });
+      }
+    }
+
+    const jsonResponse = await handleUpload({
+      token,
+      request: req,
+      body,
+      onBeforeGenerateToken: async () => ({
+        allowedContentTypes: ALLOWED_MEDIA_MIME,
+        maximumSizeInBytes: 150 * 1024 * 1024,
+        addRandomSuffix: true,
+        cacheControlMaxAge: 60 * 60 * 24 * 365,
+      }),
+    });
+
+    return sendJson(res, 200, jsonResponse);
+  } catch (err) {
+    console.error('Client blob upload error:', err);
+    return sendJson(res, 400, { error: 'Não foi possível autorizar o envio para o Vercel Blob.' });
+  }
 }
 
 export async function handleBlobUpload(
@@ -240,17 +314,9 @@ export async function handleBlobUpload(
       return sendJson(res, 400, { error: 'Arquivo, tipo MIME e conteúdo são obrigatórios.' });
     }
 
-    const allowedMime = [
-      'image/jpeg',
-      'image/png',
-      'image/webp',
-      'video/mp4',
-      'video/webm',
-      'application/pdf',
-    ];
-    if (!allowedMime.includes(mimeType)) {
+    if (!ALLOWED_MEDIA_MIME.includes(mimeType)) {
       return sendJson(res, 400, {
-        error: 'Formato de arquivo não suportado. Use JPG, PNG, WebP, MP4, WebM ou PDF.',
+        error: 'Formato de arquivo não suportado. Use JPG, PNG, WebP, AVIF, MP4, WebM, MOV ou PDF.',
       });
     }
 
@@ -258,7 +324,7 @@ export async function handleBlobUpload(
     const buffer = Buffer.from(cleanBase64, 'base64');
     const maxBytes = 25 * 1024 * 1024;
     if (buffer.length === 0 || buffer.length > maxBytes) {
-      return sendJson(res, 400, { error: 'Tamanho de arquivo inválido (máximo de 25 MB).' });
+      return sendJson(res, 400, { error: 'Tamanho de arquivo inválido (máximo de 25 MB neste endpoint).' });
     }
 
     const safeExt = path.extname(filename).replace(/[^a-zA-Z0-9.]/g, '').slice(0, 10) || '.bin';
@@ -271,11 +337,12 @@ export async function handleBlobUpload(
     const uniqueName = `${crypto.randomUUID().slice(0, 8)}-${safeBase}${safeExt}`;
     const objectPath = `${tenantId}/${safeFolder}/${uniqueName}`;
 
-    if (process.env.BLOB_READ_WRITE_TOKEN) {
+    const blobToken = getBlobToken();
+    if (blobToken) {
       const blob = await put(objectPath, buffer, {
         access: 'public',
         contentType: mimeType,
-        token: process.env.BLOB_READ_WRITE_TOKEN,
+        token: blobToken,
       });
       return sendJson(res, 200, {
         url: blob.url,
@@ -289,7 +356,7 @@ export async function handleBlobUpload(
     if (process.env.VERCEL || !uploadRoot) {
       return sendJson(res, 503, {
         error:
-          'BLOB_READ_WRITE_TOKEN não configurado na Vercel. Conecte um Vercel Blob Store ao projeto em Storage > Blob para salvar fotos e arquivos online.',
+          'BLOB_READ_WRITE_TOKEN não configurado na Vercel. Conecte o Vercel Blob Store nas variáveis de ambiente do projeto.',
       });
     }
 
@@ -341,11 +408,12 @@ export async function handleBlobDelete(
       return sendJson(res, 400, { error: 'tenantId inválido.' });
     }
 
-    if (url && isAllowedRemoteUrl(url) && process.env.BLOB_READ_WRITE_TOKEN) {
+    const blobToken = getBlobToken();
+    if (url && isAllowedRemoteUrl(url) && blobToken) {
       if (pathname && !pathname.startsWith(`${tenantId}/`)) {
         return sendJson(res, 403, { error: 'Acesso negado ao arquivo de outro corretor.' });
       }
-      await del(url, { token: process.env.BLOB_READ_WRITE_TOKEN });
+      await del(url, { token: blobToken });
       return sendJson(res, 200, { deleted: true, storageProvider: 'vercel-blob' });
     }
 

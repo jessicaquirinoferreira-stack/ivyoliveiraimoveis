@@ -7,8 +7,11 @@ import {
   Copy,
   Download,
   ExternalLink,
+  Eye,
+  EyeOff,
   FileText,
   Home,
+  KeyRound,
   LayoutGrid,
   LogOut,
   MessageSquareQuote,
@@ -86,7 +89,7 @@ import {
   transactionTypeLabel,
 } from '../../utils/formatters';
 import { applySeoMetadata } from '../../utils/seo';
-import { uploadMediaToServer } from '../../services/mediaService';
+import { deleteMediaOnServer, uploadMediaToServer } from '../../services/mediaService';
 import { PropertyEditorModal } from './PropertyEditorModal';
 
 interface AdminDashboardProps {
@@ -101,6 +104,7 @@ type AdminTab =
   | 'leads'
   | 'marketing'
   | 'branding'
+  | 'security'
   | 'tenants';
 
 interface HealthStatus {
@@ -128,7 +132,7 @@ function getDateKey(ts: unknown): string {
 }
 
 export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
-  const { user, profile, isAdmin, tenant, activeTenantId, setActiveTenantId, logout } = useAppContext();
+  const { user, profile, isAdmin, tenant, activeTenantId, setActiveTenantId, updateUserPassword, logout } = useAppContext();
   const [tab, setTab] = useState<AdminTab>('dashboard');
 
   // Real-time Firestore collections
@@ -215,6 +219,15 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
   const [newTenantBroker, setNewTenantBroker] = useState('');
   const [newTenantCity, setNewTenantCity] = useState('Rio de Janeiro');
   const [newTenantState, setNewTenantState] = useState('RJ');
+
+  // Security & Password update state
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
+  const [showCurrentPwd, setShowCurrentPwd] = useState(false);
+  const [showNewPwd, setShowNewPwd] = useState(false);
+  const [showConfirmPwd, setShowConfirmPwd] = useState(false);
+  const [updatingPassword, setUpdatingPassword] = useState(false);
 
   useEffect(() => {
     applySeoMetadata({
@@ -333,24 +346,42 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
   const handleTogglePropertyStatus = async (prop: Property) => {
     if (!user) return;
     const nextStatus = prop.status === 'published' ? 'draft' : 'published';
-    await saveProperty({ ...prop, status: nextStatus }, false);
-    await writeAuditLog({
-      tenantId: activeTenantId,
-      ownerUid: prop.ownerUid,
-      actorUid: user.uid,
-      actorEmail: user.email || '',
-      action: 'toggle_property_status',
-      entityType: 'property',
-      entityId: prop.id,
-      summary: `Alterou status de "${prop.title}" para ${nextStatus}`,
-    });
-    showNotice('ok', `Imóvel ${nextStatus === 'published' ? 'publicado' : 'movido para rascunho'}.`);
+    try {
+      await saveProperty({ ...prop, status: nextStatus }, false);
+      await writeAuditLog({
+        tenantId: activeTenantId,
+        ownerUid: prop.ownerUid,
+        actorUid: user.uid,
+        actorEmail: user.email || '',
+        action: 'toggle_property_status',
+        entityType: 'property',
+        entityId: prop.id,
+        summary: `Alterou status de "${prop.title}" para ${nextStatus}`,
+      });
+      showNotice('ok', `Imóvel ${nextStatus === 'published' ? 'publicado no site em tempo real' : 'movido para rascunho'}.`);
+    } catch (err) {
+      showNotice('err', err instanceof Error ? err.message : 'Erro ao alterar status do imóvel.');
+    }
   };
 
   const handleTogglePropertyFeatured = async (prop: Property) => {
     if (!user) return;
-    await saveProperty({ ...prop, featured: !prop.featured }, false);
-    showNotice('ok', !prop.featured ? 'Imóvel destacado na Home.' : 'Destaque removido.');
+    try {
+      await saveProperty({ ...prop, featured: !prop.featured }, false);
+      await writeAuditLog({
+        tenantId: activeTenantId,
+        ownerUid: prop.ownerUid,
+        actorUid: user.uid,
+        actorEmail: user.email || '',
+        action: 'toggle_property_featured',
+        entityType: 'property',
+        entityId: prop.id,
+        summary: `${!prop.featured ? 'Destacou' : 'Removeu destaque de'} "${prop.title}"`,
+      });
+      showNotice('ok', !prop.featured ? 'Imóvel destacado na Home.' : 'Destaque removido.');
+    } catch (err) {
+      showNotice('err', err instanceof Error ? err.message : 'Erro ao atualizar destaque do imóvel.');
+    }
   };
 
   const handleDuplicateProperty = async (prop: Property) => {
@@ -368,34 +399,51 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
       featured: false,
       viewsCount: 0,
     };
-    await saveProperty(copy, true);
-    await writeAuditLog({
-      tenantId: activeTenantId,
-      ownerUid: copy.ownerUid,
-      actorUid: user.uid,
-      actorEmail: user.email || '',
-      action: 'duplicate_property',
-      entityType: 'property',
-      entityId: newId,
-      summary: `Duplicou imóvel "${prop.title}" como rascunho`,
-    });
-    showNotice('ok', 'Cópia criada como rascunho.');
+    try {
+      await saveProperty(copy, true);
+      await writeAuditLog({
+        tenantId: activeTenantId,
+        ownerUid: copy.ownerUid,
+        actorUid: user.uid,
+        actorEmail: user.email || '',
+        action: 'duplicate_property',
+        entityType: 'property',
+        entityId: newId,
+        summary: `Duplicou imóvel "${prop.title}" como rascunho`,
+      });
+      showNotice('ok', 'Cópia criada como rascunho.');
+    } catch (err) {
+      showNotice('err', err instanceof Error ? err.message : 'Erro ao duplicar imóvel.');
+    }
   };
 
   const handleDeleteProperty = async (prop: Property) => {
     if (!user) return;
-    await deleteProperty(prop.id);
-    await writeAuditLog({
-      tenantId: activeTenantId,
-      ownerUid: prop.ownerUid,
-      actorUid: user.uid,
-      actorEmail: user.email || '',
-      action: 'delete_property',
-      entityType: 'property',
-      entityId: prop.id,
-      summary: `Removeu imóvel "${prop.title}"`,
-    });
-    showNotice('ok', 'Imóvel removido do catálogo.');
+    try {
+      await deleteProperty(prop.id);
+      const mediaToClean = [
+        ...(prop.images || []),
+        ...(prop.panorama360Images || []),
+      ];
+      await Promise.all(
+        mediaToClean.map((item) =>
+          deleteMediaOnServer(activeTenantId, item.url, item.pathname).catch(() => {})
+        )
+      );
+      await writeAuditLog({
+        tenantId: activeTenantId,
+        ownerUid: prop.ownerUid,
+        actorUid: user.uid,
+        actorEmail: user.email || '',
+        action: 'delete_property',
+        entityType: 'property',
+        entityId: prop.id,
+        summary: `Removeu imóvel "${prop.title}"`,
+      });
+      showNotice('ok', 'Imóvel removido permanentemente do banco e do site.');
+    } catch (err) {
+      showNotice('err', err instanceof Error ? err.message : 'Erro ao remover imóvel.');
+    }
   };
 
   // Development CRUD handlers
@@ -430,7 +478,7 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
       setDevCoverImage('');
       setDevImages([]);
       setDevFloorPlans([]);
-      setDevStatus('draft');
+      setDevStatus('published');
       setDevFeatured(false);
     }
     setDevModalOpen(true);
@@ -478,6 +526,68 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
     }
   };
 
+  const handleRemoveDevImage = (item: PropertyMediaItem, target: 'gallery' | 'floorplan') => {
+    if (target === 'floorplan') {
+      setDevFloorPlans((prev) => prev.filter((p) => p.id !== item.id));
+    } else {
+      setDevImages((prev) => {
+        const next = prev.filter((p) => p.id !== item.id);
+        if (devCoverImage === item.url) {
+          setDevCoverImage(next[0]?.url || '');
+        }
+        return next;
+      });
+    }
+    deleteMediaOnServer(activeTenantId, item.url, item.pathname).catch(() => {});
+  };
+
+  const handleToggleDevelopmentStatus = async (dev: Development) => {
+    if (!user) return;
+    const nextStatus = dev.status === 'published' ? 'draft' : 'published';
+    try {
+      await saveDevelopment({ ...dev, status: nextStatus }, false);
+      await writeAuditLog({
+        tenantId: activeTenantId,
+        ownerUid: dev.ownerUid,
+        actorUid: user.uid,
+        actorEmail: user.email || '',
+        action: 'toggle_development_status',
+        entityType: 'development',
+        entityId: dev.id,
+        summary: `Alterou status de "${dev.name}" para ${nextStatus}`,
+      });
+      showNotice('ok', `Empreendimento ${nextStatus === 'published' ? 'publicado no site em tempo real' : 'movido para rascunho'}.`);
+    } catch (err) {
+      showNotice('err', err instanceof Error ? err.message : 'Erro ao alterar status do empreendimento.');
+    }
+  };
+
+  const handleDeleteDevelopment = async (dev: Development) => {
+    if (!user) return;
+    try {
+      await deleteDevelopment(dev.id);
+      const mediaToClean = [...(dev.images || []), ...(dev.floorPlans || [])];
+      await Promise.all(
+        mediaToClean.map((item) =>
+          deleteMediaOnServer(activeTenantId, item.url, item.pathname).catch(() => {})
+        )
+      );
+      await writeAuditLog({
+        tenantId: activeTenantId,
+        ownerUid: dev.ownerUid,
+        actorUid: user.uid,
+        actorEmail: user.email || '',
+        action: 'delete_development',
+        entityType: 'development',
+        entityId: dev.id,
+        summary: `Removeu empreendimento "${dev.name}"`,
+      });
+      showNotice('ok', 'Empreendimento removido permanentemente do banco e do site.');
+    } catch (err) {
+      showNotice('err', err instanceof Error ? err.message : 'Erro ao remover empreendimento.');
+    }
+  };
+
   const handleSaveDevelopment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user || !devName.trim() || !devNeighborhood.trim()) {
@@ -509,19 +619,23 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
       seoTitle: `${devName.trim()} — ${tenant.brandName}`,
       seoDescription: devDescription.trim().slice(0, 155),
     };
-    await saveDevelopment(payload, !editingDevId);
-    await writeAuditLog({
-      tenantId: activeTenantId,
-      ownerUid: payload.ownerUid,
-      actorUid: user.uid,
-      actorEmail: user.email || '',
-      action: editingDevId ? 'update_development' : 'create_development',
-      entityType: 'development',
-      entityId: id,
-      summary: `${editingDevId ? 'Atualizou' : 'Cadastrou'} empreendimento "${payload.name}"`,
-    });
-    setDevModalOpen(false);
-    showNotice('ok', 'Empreendimento salvo com sucesso.');
+    try {
+      await saveDevelopment(payload, !editingDevId);
+      await writeAuditLog({
+        tenantId: activeTenantId,
+        ownerUid: payload.ownerUid,
+        actorUid: user.uid,
+        actorEmail: user.email || '',
+        action: editingDevId ? 'update_development' : 'create_development',
+        entityType: 'development',
+        entityId: id,
+        summary: `${editingDevId ? 'Atualizou' : 'Cadastrou'} empreendimento "${payload.name}" (${payload.status})`,
+      });
+      setDevModalOpen(false);
+      showNotice('ok', `Empreendimento salvo e ${payload.status === 'published' ? 'publicado em tempo real!' : 'salvo como rascunho.'}`);
+    } catch (err) {
+      showNotice('err', err instanceof Error ? err.message : 'Erro ao salvar empreendimento.');
+    }
   };
 
   // Landing Page CRUD handlers
@@ -597,19 +711,43 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
       seoTitle: `${lpTitle.trim()} — ${tenant.brandName}`,
       seoDescription: (lpSubtitle || lpDescription).trim().slice(0, 155),
     };
-    await saveLandingPage(payload, !editingLpId);
-    await writeAuditLog({
-      tenantId: activeTenantId,
-      ownerUid: payload.ownerUid,
-      actorUid: user.uid,
-      actorEmail: user.email || '',
-      action: editingLpId ? 'update_landing_page' : 'create_landing_page',
-      entityType: 'landingPage',
-      entityId: id,
-      summary: `${editingLpId ? 'Atualizou' : 'Criou'} landing page "/oferta/${cleanSlug}"`,
-    });
-    setLpModalOpen(false);
-    showNotice('ok', `Landing page salva! URL: /oferta/${cleanSlug}`);
+    try {
+      await saveLandingPage(payload, !editingLpId);
+      await writeAuditLog({
+        tenantId: activeTenantId,
+        ownerUid: payload.ownerUid,
+        actorUid: user.uid,
+        actorEmail: user.email || '',
+        action: editingLpId ? 'update_landing_page' : 'create_landing_page',
+        entityType: 'landingPage',
+        entityId: id,
+        summary: `${editingLpId ? 'Atualizou' : 'Criou'} landing page "/oferta/${cleanSlug}"`,
+      });
+      setLpModalOpen(false);
+      showNotice('ok', `Landing page salva! URL: /oferta/${cleanSlug}`);
+    } catch (err) {
+      showNotice('err', err instanceof Error ? err.message : 'Erro ao salvar landing page.');
+    }
+  };
+
+  const handleDeleteLandingPage = async (lp: LandingPage) => {
+    if (!user) return;
+    try {
+      await deleteLandingPage(lp.id);
+      await writeAuditLog({
+        tenantId: activeTenantId,
+        ownerUid: lp.ownerUid,
+        actorUid: user.uid,
+        actorEmail: user.email || '',
+        action: 'delete_landing_page',
+        entityType: 'landingPage',
+        entityId: lp.id,
+        summary: `Removeu landing page "/oferta/${lp.slug}"`,
+      });
+      showNotice('ok', 'Landing page removida permanentemente.');
+    } catch (err) {
+      showNotice('err', err instanceof Error ? err.message : 'Erro ao remover landing page.');
+    }
   };
 
   // Lead CRM filter & CSV Export
@@ -676,6 +814,7 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
           filename: file.name,
           mimeType: file.type,
           folder: 'branding',
+          preserveTransparency: field === 'logoUrl' || field === 'faviconUrl' || field === 'aboutPhotoUrl',
         });
         urls.push(res.url);
       }
@@ -761,6 +900,45 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
     }
   };
 
+  const handleChangeAdminPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user) return;
+    if (!currentPassword.trim()) {
+      showNotice('err', 'Informe sua senha atual para confirmar a alteração.');
+      return;
+    }
+    if (newPassword.length < 6) {
+      showNotice('err', 'A nova senha deve ter pelo menos 6 caracteres.');
+      return;
+    }
+    if (newPassword !== confirmNewPassword) {
+      showNotice('err', 'A confirmação da nova senha não confere.');
+      return;
+    }
+    setUpdatingPassword(true);
+    try {
+      await updateUserPassword(currentPassword, newPassword);
+      await writeAuditLog({
+        tenantId: activeTenantId,
+        ownerUid: tenant.ownerUid || user.uid,
+        actorUid: user.uid,
+        actorEmail: user.email || '',
+        action: 'update_admin_password',
+        entityType: 'tenant',
+        entityId: activeTenantId,
+        summary: `Alterou a senha administrativa de ${user.email || 'admin'} em tempo real no Firebase`,
+      });
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmNewPassword('');
+      showNotice('ok', 'Senha alterada em tempo real no Firebase! A nova senha já está ativa para os próximos acessos.');
+    } catch (err) {
+      showNotice('err', err instanceof Error ? err.message : 'Não foi possível alterar a senha.');
+    } finally {
+      setUpdatingPassword(false);
+    }
+  };
+
   const navLinks: Array<{ id: AdminTab; label: string; icon: React.ComponentType<{ className?: string }> }> = [
     { id: 'dashboard', label: 'Visão Geral', icon: BarChart3 },
     { id: 'properties', label: 'Imóveis', icon: Home },
@@ -769,6 +947,7 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
     { id: 'leads', label: 'Leads & CRM', icon: Users },
     { id: 'marketing', label: 'Depoimentos & UTM', icon: MessageSquareQuote },
     { id: 'branding', label: 'Marca & Temas', icon: Palette },
+    { id: 'security', label: 'Segurança & Senha', icon: KeyRound },
     { id: 'tenants', label: 'Multi-Corretor & Log', icon: Shield },
   ];
 
@@ -1170,29 +1349,52 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                     className="p-5 bg-[var(--site-surface)] border border-[var(--site-border)] rounded-[var(--site-radius)] space-y-4"
                   >
                     <div className="flex items-start justify-between gap-4">
-                      <div className="space-y-1">
-                        <p className="text-[11px] text-[var(--site-text-muted)]">
-                          {dev.category} · {dev.neighborhood}, {dev.city} ·{' '}
-                          <span className={dev.status === 'published' ? 'text-emerald-700 font-semibold' : 'text-amber-700'}>
-                            {dev.status === 'published' ? 'Publicado' : 'Rascunho'}
-                          </span>
-                        </p>
-                        <h3 className="font-editorial text-xl font-semibold">{dev.name}</h3>
-                        <p className="font-mono text-xs tabular-nums text-[var(--site-text-muted)]">
-                          {dev.priceFrom > 0 ? `A partir de ${formatCurrencyBRL(dev.priceFrom)}` : 'Sob consulta'}
-                        </p>
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="w-20 h-14 shrink-0 rounded overflow-hidden bg-[var(--site-surface-alt)] border border-[var(--site-border)]">
+                          {dev.coverImage ? (
+                            <img src={dev.coverImage} alt={dev.name} className="w-full h-full object-cover" />
+                          ) : null}
+                        </div>
+                        <div className="min-w-0 space-y-1">
+                          <p className="text-[11px] text-[var(--site-text-muted)] truncate">
+                            {dev.category} · {dev.neighborhood}, {dev.city} ·{' '}
+                            <span className={dev.status === 'published' ? 'text-emerald-700 font-semibold' : 'text-amber-700'}>
+                              {dev.status === 'published' ? 'Publicado' : 'Rascunho'}
+                            </span>
+                          </p>
+                          <h3 className="font-editorial text-xl font-semibold truncate">{dev.name}</h3>
+                          <p className="font-mono text-xs tabular-nums text-[var(--site-text-muted)]">
+                            {dev.priceFrom > 0 ? `A partir de ${formatCurrencyBRL(dev.priceFrom)}` : 'Sob consulta'}
+                          </p>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex flex-wrap items-center justify-end gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleDevelopmentStatus(dev)}
+                          className="px-2.5 py-1.5 text-xs border border-[var(--site-border)] rounded hover:border-[var(--site-accent)]"
+                        >
+                          {dev.status === 'published' ? 'Despublicar' : 'Publicar'}
+                        </button>
                         <button
                           type="button"
                           onClick={() => openDevEditor(dev)}
-                          className="px-3 py-1.5 text-xs border border-[var(--site-border)] rounded"
+                          className="px-3 py-1.5 text-xs bg-[var(--site-text)] text-[var(--site-surface)] rounded"
                         >
                           Editar
                         </button>
                         <button
                           type="button"
-                          onClick={() => deleteDevelopment(dev.id)}
+                          onClick={() => onNavigate(`/empreendimento/${dev.slug}`)}
+                          title="Visualizar página pública"
+                          className="p-1.5 border border-[var(--site-border)] rounded text-xs"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteDevelopment(dev)}
+                          title="Excluir empreendimento"
                           className="p-1.5 text-red-700 border border-red-200 rounded"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
@@ -1325,29 +1527,87 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                     />
                   </label>
 
-                  <div className="flex flex-wrap gap-3 text-xs">
-                    <label className="inline-flex items-center gap-1.5 px-3 py-2 border border-[var(--site-border)] rounded cursor-pointer">
-                      <Upload className="w-3.5 h-3.5" />
-                      {devUploading ? 'Enviando...' : `Enviar Fotos (${devImages.length})`}
-                      <input
-                        type="file"
-                        multiple
-                        accept="image/*"
-                        className="hidden"
-                        onChange={(e) => handleDevMediaUpload(e, 'gallery')}
-                      />
-                    </label>
-                    <label className="inline-flex items-center gap-1.5 px-3 py-2 border border-[var(--site-border)] rounded cursor-pointer">
-                      <Upload className="w-3.5 h-3.5" />
-                      {`Enviar Plantas (${devFloorPlans.length})`}
-                      <input
-                        type="file"
-                        multiple
-                        accept="image/*"
-                        className="hidden"
-                        onChange={(e) => handleDevMediaUpload(e, 'floorplan')}
-                      />
-                    </label>
+                  <div className="space-y-4 text-xs">
+                    <div className="flex flex-wrap gap-3">
+                      <label className="inline-flex items-center gap-1.5 px-3 py-2 border border-[var(--site-border)] rounded cursor-pointer">
+                        <Upload className="w-3.5 h-3.5" />
+                        {devUploading ? 'Enviando...' : `Enviar Fotos (${devImages.length})`}
+                        <input
+                          type="file"
+                          multiple
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(e) => handleDevMediaUpload(e, 'gallery')}
+                        />
+                      </label>
+                      <label className="inline-flex items-center gap-1.5 px-3 py-2 border border-[var(--site-border)] rounded cursor-pointer">
+                        <Upload className="w-3.5 h-3.5" />
+                        {`Enviar Plantas (${devFloorPlans.length})`}
+                        <input
+                          type="file"
+                          multiple
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(e) => handleDevMediaUpload(e, 'floorplan')}
+                        />
+                      </label>
+                    </div>
+
+                    {devImages.length > 0 && (
+                      <div className="space-y-2">
+                        <p className="font-medium text-[var(--site-text-muted)]">Fotos da Galeria</p>
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                          {devImages.map((img) => {
+                            const isCover = devCoverImage === img.url;
+                            return (
+                              <div key={img.id} className="border border-[var(--site-border)] rounded overflow-hidden bg-[var(--site-bg)]">
+                                <div className="aspect-[4/3] relative">
+                                  <img src={img.url} alt={img.caption || devName} className="w-full h-full object-cover" />
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoveDevImage(img, 'gallery')}
+                                    title="Excluir foto"
+                                    className="absolute top-1.5 right-1.5 p-1 bg-black/70 text-white rounded hover:bg-red-700"
+                                  >
+                                    <Trash2 className="w-3 h-3" />
+                                  </button>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => setDevCoverImage(img.url)}
+                                  className={`w-full py-1 text-[11px] font-medium ${
+                                    isCover ? 'bg-[var(--site-accent)] text-white' : 'hover:bg-[var(--site-surface-alt)]'
+                                  }`}
+                                >
+                                  {isCover ? 'Capa principal' : 'Definir como capa'}
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {devFloorPlans.length > 0 && (
+                      <div className="space-y-2">
+                        <p className="font-medium text-[var(--site-text-muted)]">Plantas</p>
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                          {devFloorPlans.map((fp) => (
+                            <div key={fp.id} className="border border-[var(--site-border)] rounded overflow-hidden bg-[var(--site-bg)] relative aspect-[4/3]">
+                              <img src={fp.url} alt={fp.caption || 'Planta'} className="w-full h-full object-cover" />
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveDevImage(fp, 'floorplan')}
+                                title="Excluir planta"
+                                className="absolute top-1.5 right-1.5 p-1 bg-black/70 text-white rounded hover:bg-red-700"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   <div className="flex justify-end gap-3 pt-4 border-t border-[var(--site-border)]">
@@ -1452,7 +1712,7 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                         </button>
                         <button
                           type="button"
-                          onClick={() => deleteLandingPage(lp.id)}
+                          onClick={() => handleDeleteLandingPage(lp)}
                           className="p-2 border border-red-200 text-red-700 rounded"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
@@ -1703,8 +1963,12 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                           <select
                             value={lead.status}
                             onChange={async (e) => {
-                              await updateLeadStatus(lead.id, e.target.value as LeadStatus, notesVal);
-                              showNotice('ok', 'Status do lead atualizado.');
+                              try {
+                                await updateLeadStatus(lead.id, e.target.value as LeadStatus, notesVal);
+                                showNotice('ok', 'Status do lead atualizado.');
+                              } catch (err) {
+                                showNotice('err', err instanceof Error ? err.message : 'Erro ao atualizar lead.');
+                              }
                             }}
                             className="px-3 py-1.5 text-xs border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
                           >
@@ -1716,7 +1980,14 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                           </select>
                           <button
                             type="button"
-                            onClick={() => deleteLead(lead.id)}
+                            onClick={async () => {
+                              try {
+                                await deleteLead(lead.id);
+                                showNotice('ok', 'Lead removido permanentemente.');
+                              } catch (err) {
+                                showNotice('err', err instanceof Error ? err.message : 'Erro ao remover lead.');
+                              }
+                            }}
                             className="p-1.5 border border-red-200 text-red-700 rounded"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
@@ -1735,8 +2006,12 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                         <button
                           type="button"
                           onClick={async () => {
-                            await updateLeadStatus(lead.id, lead.status, notesVal);
-                            showNotice('ok', 'Anotação salva.');
+                            try {
+                              await updateLeadStatus(lead.id, lead.status, notesVal);
+                              showNotice('ok', 'Anotação salva.');
+                            } catch (err) {
+                              showNotice('err', err instanceof Error ? err.message : 'Erro ao salvar anotação.');
+                            }
                           }}
                           className="px-3 py-1.5 text-xs border border-[var(--site-border)] rounded hover:border-[var(--site-accent)]"
                         >
@@ -1767,24 +2042,28 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                 onSubmit={async (e) => {
                   e.preventDefault();
                   if (!user || !testName.trim() || !testQuote.trim()) return;
-                  await saveTestimonial(
-                    {
-                      id: generateSafeId('test'),
-                      tenantId: activeTenantId,
-                      ownerUid: tenant.ownerUid || user.uid,
-                      clientName: testName.trim(),
-                      clientRole: testRole.trim(),
-                      quote: testQuote.trim(),
-                      propertyReference: testPropRef.trim(),
-                      status: testStatus,
-                    },
-                    true
-                  );
-                  setTestName('');
-                  setTestRole('');
-                  setTestQuote('');
-                  setTestPropRef('');
-                  showNotice('ok', 'Depoimento cadastrado.');
+                  try {
+                    await saveTestimonial(
+                      {
+                        id: generateSafeId('test'),
+                        tenantId: activeTenantId,
+                        ownerUid: tenant.ownerUid || user.uid,
+                        clientName: testName.trim(),
+                        clientRole: testRole.trim(),
+                        quote: testQuote.trim(),
+                        propertyReference: testPropRef.trim(),
+                        status: testStatus,
+                      },
+                      true
+                    );
+                    setTestName('');
+                    setTestRole('');
+                    setTestQuote('');
+                    setTestPropRef('');
+                    showNotice('ok', 'Depoimento cadastrado e atualizado em tempo real.');
+                  } catch (err) {
+                    showNotice('err', err instanceof Error ? err.message : 'Erro ao salvar depoimento.');
+                  }
                 }}
                 className="space-y-3 text-xs"
               >
@@ -1847,7 +2126,14 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                     </div>
                     <button
                       type="button"
-                      onClick={() => deleteTestimonial(t.id)}
+                      onClick={async () => {
+                        try {
+                          await deleteTestimonial(t.id);
+                          showNotice('ok', 'Depoimento removido.');
+                        } catch (err) {
+                          showNotice('err', err instanceof Error ? err.message : 'Erro ao remover depoimento.');
+                        }
+                      }}
                       className="p-1.5 text-red-700 self-start"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
@@ -1870,24 +2156,28 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                 onSubmit={async (e) => {
                   e.preventDefault();
                   if (!user || !campName.trim()) return;
-                  await saveCampaign(
-                    {
-                      id: generateSafeId('camp'),
-                      tenantId: activeTenantId,
-                      ownerUid: tenant.ownerUid || user.uid,
-                      name: campName.trim(),
-                      channel: campChannel,
-                      utmSource: campUtmSource.trim(),
-                      utmMedium: campUtmMedium.trim(),
-                      utmCampaign: campUtmCampaign.trim() || slugify(campName),
-                      status: 'active',
-                      budget: Number(campBudget) || 0,
-                    },
-                    true
-                  );
-                  setCampName('');
-                  setCampUtmCampaign('');
-                  showNotice('ok', 'Campanha registrada.');
+                  try {
+                    await saveCampaign(
+                      {
+                        id: generateSafeId('camp'),
+                        tenantId: activeTenantId,
+                        ownerUid: tenant.ownerUid || user.uid,
+                        name: campName.trim(),
+                        channel: campChannel,
+                        utmSource: campUtmSource.trim(),
+                        utmMedium: campUtmMedium.trim(),
+                        utmCampaign: campUtmCampaign.trim() || slugify(campName),
+                        status: 'active',
+                        budget: Number(campBudget) || 0,
+                      },
+                      true
+                    );
+                    setCampName('');
+                    setCampUtmCampaign('');
+                    showNotice('ok', 'Campanha registrada.');
+                  } catch (err) {
+                    showNotice('err', err instanceof Error ? err.message : 'Erro ao salvar campanha.');
+                  }
                 }}
                 className="space-y-3 text-xs"
               >
@@ -2298,7 +2588,118 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
           </form>
         )}
 
-        {/* TAB 8: MULTI-TENANT & AUDIT LOGS */}
+        {/* TAB 8: SECURITY & REAL-TIME PASSWORD CHANGE */}
+        {tab === 'security' && (
+          <div className="space-y-8 max-w-2xl">
+            <div>
+              <h2 className="font-editorial text-3xl font-semibold">Segurança & Senha do Administrador</h2>
+              <p className="text-xs text-[var(--site-text-muted)]">
+                Altere sua senha administrativa diretamente no Firebase Authentication em tempo real.
+              </p>
+            </div>
+
+            <div className="p-6 bg-[var(--site-surface)] border border-[var(--site-border)] rounded-[var(--site-radius)] space-y-6">
+              <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-[var(--site-border)]">
+                <div>
+                  <p className="text-[11px] uppercase tracking-wider text-[var(--site-text-muted)]">Conta autenticada</p>
+                  <p className="text-sm font-medium mt-0.5">{user?.email || profile?.email}</p>
+                </div>
+                <span className="px-2.5 py-1 text-[11px] font-medium bg-emerald-50 text-emerald-800 border border-emerald-200 rounded">
+                  Firebase Auth Ativo
+                </span>
+              </div>
+
+              <form onSubmit={handleChangeAdminPassword} className="space-y-4 text-xs">
+                <label className="space-y-1.5 block">
+                  <span className="font-medium">Senha atual *</span>
+                  <div className="relative">
+                    <input
+                      type={showCurrentPwd ? 'text' : 'password'}
+                      required
+                      autoComplete="current-password"
+                      value={currentPassword}
+                      onChange={(e) => setCurrentPassword(e.target.value)}
+                      placeholder="Digite sua senha atual"
+                      className="w-full px-3 py-2.5 pr-10 text-sm border border-[var(--site-border)] rounded-[var(--site-radius)] bg-[var(--site-bg)]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowCurrentPwd((v) => !v)}
+                      aria-label="Mostrar ou ocultar senha atual"
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--site-text-muted)] hover:text-[var(--site-text)]"
+                    >
+                      {showCurrentPwd ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </label>
+
+                <label className="space-y-1.5 block">
+                  <span className="font-medium">Nova senha (mínimo 6 caracteres) *</span>
+                  <div className="relative">
+                    <input
+                      type={showNewPwd ? 'text' : 'password'}
+                      required
+                      minLength={6}
+                      autoComplete="new-password"
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      placeholder="Digite a nova senha"
+                      className="w-full px-3 py-2.5 pr-10 text-sm border border-[var(--site-border)] rounded-[var(--site-radius)] bg-[var(--site-bg)]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowNewPwd((v) => !v)}
+                      aria-label="Mostrar ou ocultar nova senha"
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--site-text-muted)] hover:text-[var(--site-text)]"
+                    >
+                      {showNewPwd ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </label>
+
+                <label className="space-y-1.5 block">
+                  <span className="font-medium">Confirmar nova senha *</span>
+                  <div className="relative">
+                    <input
+                      type={showConfirmPwd ? 'text' : 'password'}
+                      required
+                      minLength={6}
+                      autoComplete="new-password"
+                      value={confirmNewPassword}
+                      onChange={(e) => setConfirmNewPassword(e.target.value)}
+                      placeholder="Repita a nova senha"
+                      className="w-full px-3 py-2.5 pr-10 text-sm border border-[var(--site-border)] rounded-[var(--site-radius)] bg-[var(--site-bg)]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowConfirmPwd((v) => !v)}
+                      aria-label="Mostrar ou ocultar confirmação da senha"
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--site-text-muted)] hover:text-[var(--site-text)]"
+                    >
+                      {showConfirmPwd ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </label>
+
+                <div className="pt-2 flex flex-wrap items-center justify-between gap-3">
+                  <p className="text-[11px] text-[var(--site-text-muted)]">
+                    A atualização é imediata no Firebase e registrada no histórico de auditoria.
+                  </p>
+                  <button
+                    type="submit"
+                    disabled={updatingPassword}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-medium bg-[var(--site-text)] text-[var(--site-surface)] rounded-[var(--site-radius)] disabled:opacity-50"
+                  >
+                    <KeyRound className="w-4 h-4" />
+                    {updatingPassword ? 'Atualizando no Firebase...' : 'Alterar Senha Agora'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 9: MULTI-TENANT & AUDIT LOGS */}
         {tab === 'tenants' && (
           <div className="space-y-8">
             <div>
