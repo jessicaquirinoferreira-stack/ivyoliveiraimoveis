@@ -100,10 +100,16 @@ import { PropertyEditorModal } from './PropertyEditorModal';
 function formatAdminError(err: unknown, fallback: string): string {
   if (!(err instanceof Error)) return fallback;
   try {
-    const parsed = JSON.parse(err.message) as { error?: string; path?: string; operationType?: string };
+    const parsed = JSON.parse(err.message) as {
+      error?: string;
+      path?: string;
+      operationType?: string;
+      authInfo?: { userId?: string | null; email?: string | null; emailVerified?: boolean | null };
+    };
     if (parsed?.error) {
       if (parsed.error.toLowerCase().includes('permission')) {
-        return `Sem permissão para ${parsed.operationType || 'alterar'} em ${parsed.path || 'Firestore'}. Verifique sua conta administrativa e tente novamente.`;
+        const who = parsed.authInfo?.email || parsed.authInfo?.userId || 'sessão não identificada';
+        return `Sem permissão para ${parsed.operationType || 'alterar'} em ${parsed.path || 'Firestore'} (conta: ${who}). Recarregue a página ou faça login novamente.`;
       }
       return parsed.error;
     }
@@ -716,7 +722,7 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
       setDevModalOpen(false);
       showNotice('ok', `Empreendimento salvo e ${payload.status === 'published' ? 'publicado em tempo real!' : 'salvo como rascunho.'}`);
     } catch (err) {
-      showNotice('err', err instanceof Error ? err.message : 'Erro ao salvar empreendimento.');
+      showNotice('err', formatAdminError(err, 'Erro ao salvar empreendimento.'));
     }
   };
 
@@ -970,7 +976,7 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
         urls.push(res.url);
       }
       if (field === 'heroImages') {
-        const nextHero = [...(brandForm.heroImages || []), ...urls].slice(0, 10);
+        const nextHero = [...(brandForm.heroImages || []), ...urls].slice(0, 30);
         setBrandForm((prev) => ({ ...prev, heroImages: nextHero }));
         await updateTenantSettings(activeTenantId, { heroImages: nextHero });
       } else {
@@ -1055,11 +1061,11 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
     try {
       const updatedFields: Partial<Tenant> = {
         ...brandForm,
-        regions: regionsInput.split(',').map((s) => s.trim()).filter(Boolean).slice(0, 50),
-        specialties: specialtiesInput.split('\n').map((s) => s.trim()).filter(Boolean).slice(0, 20),
+        regions: regionsInput.split(',').map((s) => s.trim()).filter(Boolean).slice(0, 100),
+        specialties: specialtiesInput.split('\n').map((s) => s.trim()).filter(Boolean).slice(0, 40),
         differentials: (brandForm.differentials || [])
           .filter((d) => d.title.trim() || d.description.trim())
-          .slice(0, 12),
+          .slice(0, 20),
       };
       await updateTenantSettings(activeTenantId, updatedFields);
       if (updatedFields.themeConfig) {
@@ -1116,7 +1122,7 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
       setNewTenantBroker('');
       showNotice('ok', `Novo ambiente "${newTenant.brandName}" criado e ativado.`);
     } catch (err) {
-      showNotice('err', err instanceof Error ? err.message : 'Erro ao criar corretor.');
+      showNotice('err', formatAdminError(err, 'Erro ao criar corretor.'));
     }
   };
 
@@ -2263,7 +2269,7 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                                 await updateLeadStatus(lead.id, e.target.value as LeadStatus, notesVal);
                                 showNotice('ok', 'Status do lead atualizado.');
                               } catch (err) {
-                                showNotice('err', err instanceof Error ? err.message : 'Erro ao atualizar lead.');
+                                showNotice('err', formatAdminError(err, 'Erro ao atualizar lead.'));
                               }
                             }}
                             className="px-3 py-1.5 text-xs border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
@@ -2281,7 +2287,7 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                                 await deleteLead(lead.id);
                                 showNotice('ok', 'Lead removido permanentemente.');
                               } catch (err) {
-                                showNotice('err', err instanceof Error ? err.message : 'Erro ao remover lead.');
+                                showNotice('err', formatAdminError(err, 'Erro ao remover lead.'));
                               }
                             }}
                             className="p-1.5 border border-red-200 text-red-700 rounded"
@@ -2306,7 +2312,7 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                               await updateLeadStatus(lead.id, lead.status, notesVal);
                               showNotice('ok', 'Anotação salva.');
                             } catch (err) {
-                              showNotice('err', err instanceof Error ? err.message : 'Erro ao salvar anotação.');
+                              showNotice('err', formatAdminError(err, 'Erro ao salvar anotação.'));
                             }
                           }}
                           className="px-3 py-1.5 text-xs border border-[var(--site-border)] rounded hover:border-[var(--site-accent)]"

@@ -537,20 +537,31 @@ export async function uploadMediaToServer(params: {
 
   params.onProgress?.('Salvando arquivo no servidor...');
   const base64Data = params.base64Data || (await fileToBase64(blobToUpload));
-  const resp = await fetch('/api/blob/upload', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({
-      tenantId: params.tenantId,
-      filename,
-      mimeType,
-      base64Data,
-      folder,
-    }),
+  const payloadJson = JSON.stringify({
+    tenantId: params.tenantId,
+    filename,
+    mimeType,
+    base64Data,
+    folder,
   });
+
+  const postUpload = (authToken: string) =>
+    fetch('/api/blob/upload', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${authToken}`,
+      },
+      body: payloadJson,
+    });
+
+  let resp = await postUpload(token);
+  if (resp.status === 401 && auth.currentUser) {
+    const refreshedToken = await auth.currentUser.getIdToken(true).catch(() => null);
+    if (refreshedToken) {
+      resp = await postUpload(refreshedToken);
+    }
+  }
 
   if (!resp.ok) {
     const contentType = resp.headers.get('content-type') || '';

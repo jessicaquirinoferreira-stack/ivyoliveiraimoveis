@@ -2,13 +2,17 @@ import {
   collection,
   deleteDoc,
   doc,
+  DocumentReference,
+  DocumentSnapshot,
   getDoc,
+  getDocFromServer,
   getDocs,
   onSnapshot,
   query,
   serverTimestamp,
   setDoc,
   Timestamp,
+  updateDoc,
   where,
   Unsubscribe,
 } from 'firebase/firestore';
@@ -79,8 +83,101 @@ function clampReqStr(val: unknown, maxLen: number, fallback: string): string {
 }
 
 function clampSlug(val: unknown, fallback = 'item'): string {
-  return slugify(typeof val === 'string' && val.trim() ? val : fallback).slice(0, 155);
+  const raw = slugify(typeof val === 'string' && val.trim() ? val : fallback)
+    .slice(0, 155)
+    .replace(/^-+|-+$/g, '');
+  if (raw && /^[a-z0-9-]+$/.test(raw)) return raw;
+  const safeFallback = slugify(fallback).slice(0, 60).replace(/^-+|-+$/g, '');
+  return safeFallback || 'imovel';
 }
+
+async function getDocFresh(ref: DocumentReference): Promise<DocumentSnapshot> {
+  try {
+    return await getDocFromServer(ref);
+  } catch {
+    return getDoc(ref);
+  }
+}
+
+async function withAdminWriteRetry<T>(fn: () => Promise<T>): Promise<T> {
+  if (typeof auth.authStateReady === 'function') {
+    await auth.authStateReady().catch(() => {});
+  }
+  try {
+    return await fn();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
+    const isAuthOrPerm =
+      msg.includes('permission') || msg.includes('unauthenticated') || msg.includes('insufficient');
+    const isTransient =
+      msg.includes('unavailable') ||
+      msg.includes('offline') ||
+      msg.includes('network') ||
+      msg.includes('deadline') ||
+      msg.includes('aborted');
+
+    if (isAuthOrPerm && auth.currentUser) {
+      await auth.currentUser.getIdToken(true).catch(() => {});
+      return fn();
+    }
+    if (isTransient) {
+      await new Promise((resolve) => setTimeout(resolve, 550));
+      return fn();
+    }
+    throw err;
+  }
+}
+
+function hasOnlyAllowedKeys(obj: Record<string, unknown>, allowed: readonly string[]): boolean {
+  return Object.keys(obj).every((k) => allowed.includes(k));
+}
+
+const TENANT_ALLOWED_KEYS = [
+  'id', 'ownerUid', 'slug', 'brandName', 'brokerName', 'creci', 'city', 'state', 'regions',
+  'whatsapp', 'phone', 'email', 'instagramHandle', 'instagramUrl', 'logoUrl', 'faviconUrl',
+  'heroTitle', 'heroSubtitle', 'heroCtaText', 'heroImages', 'aboutHeadline', 'aboutBio',
+  'aboutPhotoUrl', 'aboutExperienceYears', 'specialties', 'differentials', 'themePreset',
+  'themeConfig', 'seoTitle', 'seoDescription', 'ga4Id', 'gtmId', 'gscVerification',
+  'googleAdsId', 'lgpdPrivacyText', 'customDomain', 'status', 'createdAt', 'updatedAt',
+] as const;
+
+const PROPERTY_ALLOWED_KEYS = [
+  'id', 'tenantId', 'ownerUid', 'slug', 'code', 'title', 'propertyType', 'transactionType',
+  'price', 'condoFee', 'iptu', 'city', 'neighborhood', 'address', 'showExactAddress',
+  'builtArea', 'totalArea', 'bedrooms', 'suites', 'bathrooms', 'parkingSpaces',
+  'description', 'summary', 'features', 'differentials', 'coverImage', 'images',
+  'videos', 'panorama360Images', 'virtualTourType', 'status', 'featured', 'sortOrder',
+  'seoTitle', 'seoDescription', 'socialCopy', 'whatsappCopy', 'viewsCount', 'createdAt', 'updatedAt',
+] as const;
+
+const DEVELOPMENT_ALLOWED_KEYS = [
+  'id', 'tenantId', 'ownerUid', 'slug', 'name', 'developer', 'category', 'city',
+  'neighborhood', 'deliveryDate', 'priceFrom', 'description', 'technicalSpecs',
+  'coverImage', 'images', 'floorPlans', 'videos', 'status', 'featured',
+  'seoTitle', 'seoDescription', 'createdAt', 'updatedAt',
+] as const;
+
+const LANDING_PAGE_ALLOWED_KEYS = [
+  'id', 'tenantId', 'ownerUid', 'propertyId', 'slug', 'template', 'title', 'subtitle',
+  'heroImage', 'description', 'ctaText', 'accentColor', 'highlights', 'status',
+  'viewsCount', 'leadsCount', 'seoTitle', 'seoDescription', 'createdAt', 'updatedAt',
+] as const;
+
+const TESTIMONIAL_ALLOWED_KEYS = [
+  'id', 'tenantId', 'ownerUid', 'clientName', 'clientRole', 'quote', 'propertyReference',
+  'status', 'createdAt', 'updatedAt',
+] as const;
+
+const LEAD_ALLOWED_KEYS = [
+  'id', 'tenantId', 'ownerUid', 'name', 'phone', 'email', 'interest', 'propertyId',
+  'propertyTitle', 'developmentId', 'landingPageId', 'source', 'utmSource', 'utmMedium',
+  'utmCampaign', 'message', 'lgpdConsent', 'status', 'notes', 'createdAt', 'updatedAt',
+] as const;
+
+const CAMPAIGN_ALLOWED_KEYS = [
+  'id', 'tenantId', 'ownerUid', 'name', 'channel', 'utmSource', 'utmMedium', 'utmCampaign',
+  'status', 'budget', 'createdAt', 'updatedAt',
+] as const;
 
 function clampStrArray(val: unknown, maxItems: number, maxItemLen = 180): string[] {
   if (!Array.isArray(val)) return [];
@@ -260,47 +357,47 @@ function buildSanitizedTenantFields(source: Partial<Tenant>, fallback: Tenant = 
   const differentials = Array.isArray(source.differentials ?? fallback.differentials)
     ? (source.differentials ?? fallback.differentials)
         .filter((d): d is { title: string; description: string } => isPlainObject(d))
-        .slice(0, 12)
+        .slice(0, 20)
         .map((d) => ({
-          title: clampStr(d.title, 120),
-          description: clampStr(d.description, 400),
+          title: clampStr(d.title, 160),
+          description: clampStr(d.description, 600),
         }))
     : [];
 
   return cleanUndefined({
-    brandName: clampReqStr(source.brandName ?? fallback.brandName, 120, DEFAULT_TENANT.brandName),
-    brokerName: clampReqStr(source.brokerName ?? fallback.brokerName, 120, DEFAULT_TENANT.brokerName),
-    creci: clampStr(source.creci ?? fallback.creci ?? '', 60),
-    city: clampReqStr(source.city ?? fallback.city, 80, DEFAULT_TENANT.city),
-    state: clampStr(source.state ?? fallback.state ?? '', 20),
-    regions: clampStrArray(source.regions ?? fallback.regions ?? [], 50, 80),
-    whatsapp: clampStr(source.whatsapp ?? fallback.whatsapp ?? '', 30),
-    phone: clampStr(source.phone ?? fallback.phone ?? '', 30),
-    email: clampStr(source.email ?? fallback.email ?? '', 200),
-    instagramHandle: clampStr(source.instagramHandle ?? fallback.instagramHandle ?? '', 80),
-    instagramUrl: clampStr(source.instagramUrl ?? fallback.instagramUrl ?? '', 500),
-    logoUrl: clampStr(source.logoUrl ?? fallback.logoUrl ?? '', 1000),
-    faviconUrl: clampStr(source.faviconUrl ?? fallback.faviconUrl ?? '', 1000),
-    heroTitle: clampStr(source.heroTitle ?? fallback.heroTitle ?? '', 200),
-    heroSubtitle: clampStr(source.heroSubtitle ?? fallback.heroSubtitle ?? '', 500),
-    heroCtaText: clampStr(source.heroCtaText ?? fallback.heroCtaText ?? '', 60),
-    heroImages: clampStrArray(source.heroImages ?? fallback.heroImages ?? [], 10, 1000),
-    aboutHeadline: clampStr(source.aboutHeadline ?? fallback.aboutHeadline ?? '', 200),
-    aboutBio: clampStr(source.aboutBio ?? fallback.aboutBio ?? '', 4000),
-    aboutPhotoUrl: clampStr(source.aboutPhotoUrl ?? fallback.aboutPhotoUrl ?? '', 1000),
-    aboutExperienceYears: clampStr(source.aboutExperienceYears ?? fallback.aboutExperienceYears ?? '', 40),
-    specialties: clampStrArray(source.specialties ?? fallback.specialties ?? [], 20, 120),
+    brandName: clampReqStr(source.brandName ?? fallback.brandName, 200, DEFAULT_TENANT.brandName),
+    brokerName: clampReqStr(source.brokerName ?? fallback.brokerName, 200, DEFAULT_TENANT.brokerName),
+    creci: clampStr(source.creci ?? fallback.creci ?? '', 160),
+    city: clampReqStr(source.city ?? fallback.city, 120, DEFAULT_TENANT.city),
+    state: clampStr(source.state ?? fallback.state ?? '', 60),
+    regions: clampStrArray(source.regions ?? fallback.regions ?? [], 100, 100),
+    whatsapp: clampStr(source.whatsapp ?? fallback.whatsapp ?? '', 80),
+    phone: clampStr(source.phone ?? fallback.phone ?? '', 80),
+    email: clampStr(source.email ?? fallback.email ?? '', 250),
+    instagramHandle: clampStr(source.instagramHandle ?? fallback.instagramHandle ?? '', 120),
+    instagramUrl: clampStr(source.instagramUrl ?? fallback.instagramUrl ?? '', 1000),
+    logoUrl: clampStr(source.logoUrl ?? fallback.logoUrl ?? '', 4096),
+    faviconUrl: clampStr(source.faviconUrl ?? fallback.faviconUrl ?? '', 4096),
+    heroTitle: clampStr(source.heroTitle ?? fallback.heroTitle ?? '', 500),
+    heroSubtitle: clampStr(source.heroSubtitle ?? fallback.heroSubtitle ?? '', 2000),
+    heroCtaText: clampStr(source.heroCtaText ?? fallback.heroCtaText ?? '', 200),
+    heroImages: clampStrArray(source.heroImages ?? fallback.heroImages ?? [], 30, 4096),
+    aboutHeadline: clampStr(source.aboutHeadline ?? fallback.aboutHeadline ?? '', 500),
+    aboutBio: clampStr(source.aboutBio ?? fallback.aboutBio ?? '', 10000),
+    aboutPhotoUrl: clampStr(source.aboutPhotoUrl ?? fallback.aboutPhotoUrl ?? '', 4096),
+    aboutExperienceYears: clampStr(source.aboutExperienceYears ?? fallback.aboutExperienceYears ?? '', 80),
+    specialties: clampStrArray(source.specialties ?? fallback.specialties ?? [], 40, 160),
     differentials,
     themePreset,
     themeConfig: isPlainObject(rawThemeConfig) ? deepCleanUndefined(rawThemeConfig) : THEME_PRESETS[themePreset].config,
-    seoTitle: clampStr(source.seoTitle ?? fallback.seoTitle ?? '', 160),
-    seoDescription: clampStr(source.seoDescription ?? fallback.seoDescription ?? '', 320),
-    ga4Id: clampStr(source.ga4Id ?? fallback.ga4Id ?? '', 60),
-    gtmId: clampStr(source.gtmId ?? fallback.gtmId ?? '', 60),
-    gscVerification: clampStr(source.gscVerification ?? fallback.gscVerification ?? '', 120),
-    googleAdsId: clampStr(source.googleAdsId ?? fallback.googleAdsId ?? '', 60),
-    lgpdPrivacyText: clampStr(source.lgpdPrivacyText ?? fallback.lgpdPrivacyText ?? '', 6000),
-    customDomain: clampStr(source.customDomain ?? fallback.customDomain ?? '', 200),
+    seoTitle: clampStr(source.seoTitle ?? fallback.seoTitle ?? '', 300),
+    seoDescription: clampStr(source.seoDescription ?? fallback.seoDescription ?? '', 600),
+    ga4Id: clampStr(source.ga4Id ?? fallback.ga4Id ?? '', 100),
+    gtmId: clampStr(source.gtmId ?? fallback.gtmId ?? '', 100),
+    gscVerification: clampStr(source.gscVerification ?? fallback.gscVerification ?? '', 200),
+    googleAdsId: clampStr(source.googleAdsId ?? fallback.googleAdsId ?? '', 100),
+    lgpdPrivacyText: clampStr(source.lgpdPrivacyText ?? fallback.lgpdPrivacyText ?? '', 12000),
+    customDomain: clampStr(source.customDomain ?? fallback.customDomain ?? '', 250),
     status: (source.status ?? fallback.status) === 'inactive' ? 'inactive' : 'active',
   });
 }
@@ -319,19 +416,23 @@ export async function bootstrapUserAndTenant(user: User): Promise<{
     isAdmin: boolean;
   }> => {
     if (isBootAdmin) {
-      const adminRef = doc(db, 'admins', user.uid);
-      const adminSnap = await getDoc(adminRef);
-      if (!adminSnap.exists()) {
-        await setDoc(adminRef, {
-          uid: user.uid,
-          email: clampReqStr(user.email?.toLowerCase(), 200, BOOTSTRAPPED_ADMIN_EMAIL),
-          createdAt: serverTimestamp(),
-        });
+      try {
+        const adminRef = doc(db, 'admins', user.uid);
+        const adminSnap = await getDocFresh(adminRef);
+        if (!adminSnap.exists()) {
+          await setDoc(adminRef, {
+            uid: user.uid,
+            email: clampReqStr(user.email?.toLowerCase(), 200, BOOTSTRAPPED_ADMIN_EMAIL),
+            createdAt: serverTimestamp(),
+          });
+        }
+      } catch (adminErr) {
+        console.warn('Non-blocking admins doc sync warning:', adminErr);
       }
     }
 
     const userRef = doc(db, 'users', user.uid);
-    const userSnap = await getDoc(userRef);
+    const userSnap = await getDocFresh(userRef);
     let profile: UserProfile;
 
     if (!userSnap.exists()) {
@@ -365,19 +466,23 @@ export async function bootstrapUserAndTenant(user: User): Promise<{
           role: 'admin',
           tenantId: DEFAULT_TENANT_ID,
         };
-        await setDoc(userRef, {
-          ...cleanUndefined(sanitizedProfile as unknown as Record<string, unknown>),
-          createdAt: isValidFirestoreTimestamp(existingProfile.createdAt)
-            ? existingProfile.createdAt
-            : serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
+        try {
+          await setDoc(userRef, {
+            ...cleanUndefined(sanitizedProfile as unknown as Record<string, unknown>),
+            createdAt: isValidFirestoreTimestamp(existingProfile.createdAt)
+              ? existingProfile.createdAt
+              : serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        } catch (profileErr) {
+          console.warn('Non-blocking profile upgrade warning:', profileErr);
+        }
         profile = sanitizedProfile;
       }
     }
 
     const tenantRef = doc(db, 'tenants', profile.tenantId);
-    const tenantSnap = await getDoc(tenantRef);
+    const tenantSnap = await getDocFresh(tenantRef);
     let tenant: Tenant;
 
     if (!tenantSnap.exists()) {
@@ -441,17 +546,34 @@ export async function bootstrapUserAndTenant(user: User): Promise<{
           ? rawExisting.slug
           : clampSlug(rawExisting.slug || profile.tenantId, DEFAULT_TENANT.slug);
         const healedOwnerUid = isValidDocId(rawExisting.ownerUid) ? rawExisting.ownerUid : user.uid;
-        await setDoc(tenantRef, {
-          id: profile.tenantId,
-          ownerUid: healedOwnerUid,
-          slug: preservedSlug,
-          ...sanitizedFields,
-          createdAt: isValidFirestoreTimestamp(rawExisting.createdAt)
-            ? rawExisting.createdAt
-            : serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-        tenant = { ...tenant, id: profile.tenantId, ownerUid: healedOwnerUid, slug: preservedSlug };
+        const canPatchInPlace =
+          rawExisting.id === profile.tenantId &&
+          isValidDocId(rawExisting.ownerUid) &&
+          isValidSlugStr(rawExisting.slug) &&
+          isValidFirestoreTimestamp(rawExisting.createdAt) &&
+          hasOnlyAllowedKeys(rawExisting as Record<string, unknown>, TENANT_ALLOWED_KEYS);
+        try {
+          if (canPatchInPlace) {
+            await updateDoc(tenantRef, {
+              ...sanitizedFields,
+              updatedAt: serverTimestamp(),
+            });
+          } else {
+            await setDoc(tenantRef, {
+              id: profile.tenantId,
+              ownerUid: healedOwnerUid,
+              slug: preservedSlug,
+              ...sanitizedFields,
+              createdAt: isValidFirestoreTimestamp(rawExisting.createdAt)
+                ? rawExisting.createdAt
+                : serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+          }
+          tenant = { ...tenant, id: profile.tenantId, ownerUid: healedOwnerUid, slug: preservedSlug };
+        } catch (healErr) {
+          console.warn('Non-blocking tenant auto-heal warning:', healErr);
+        }
       }
     }
 
@@ -554,50 +676,76 @@ export async function createTenantDocument(newTenant: Tenant): Promise<void> {
 export async function updateTenantSettings(tenantId: string, updates: Partial<Tenant>): Promise<void> {
   const path = `tenants/${tenantId}`;
   try {
-    const tenantRef = doc(db, 'tenants', tenantId);
-    const snap = await getDoc(tenantRef);
+    await withAdminWriteRetry(async () => {
+      const tenantRef = doc(db, 'tenants', tenantId);
+      const snap = await getDocFresh(tenantRef);
 
-    if (!snap.exists()) {
-      const currentUid = auth.currentUser?.uid;
-      if (!currentUid) {
-        throw new Error('Sessão administrativa expirada. Faça login novamente.');
+      if (!snap.exists()) {
+        const currentUid = auth.currentUser?.uid;
+        if (!currentUid) {
+          throw new Error('Sessão administrativa expirada. Faça login novamente.');
+        }
+        const fields = buildSanitizedTenantFields(updates, DEFAULT_TENANT);
+        await setDoc(tenantRef, {
+          id: tenantId,
+          ownerUid: currentUid,
+          slug: clampSlug(updates.slug || tenantId, DEFAULT_TENANT.slug),
+          ...fields,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        return;
       }
-      const fields = buildSanitizedTenantFields(updates, DEFAULT_TENANT);
-      await setDoc(tenantRef, {
-        id: tenantId,
-        ownerUid: currentUid,
-        slug: clampSlug(updates.slug || tenantId, DEFAULT_TENANT.slug),
-        ...fields,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-      return;
-    }
 
-    const existing = snap.data() as Tenant & { createdAt?: unknown };
-    const mergedFields = buildSanitizedTenantFields(
-      { ...existing, ...updates },
-      tenantId === DEFAULT_TENANT_ID ? DEFAULT_TENANT : existing
-    );
+      const existing = snap.data() as Tenant & { createdAt?: unknown };
+      const mergedFields = buildSanitizedTenantFields(
+        { ...existing, ...updates },
+        tenantId === DEFAULT_TENANT_ID ? DEFAULT_TENANT : existing
+      );
 
-    const preservedSlug = isValidSlugStr(existing.slug)
-      ? existing.slug
-      : clampSlug(existing.slug || tenantId, DEFAULT_TENANT.slug);
+      const preservedSlug = isValidSlugStr(existing.slug)
+        ? existing.slug
+        : clampSlug(existing.slug || tenantId, DEFAULT_TENANT.slug);
 
-    const safeOwnerUid = isValidDocId(existing.ownerUid)
-      ? existing.ownerUid
-      : auth.currentUser?.uid || '';
+      const safeOwnerUid = isValidDocId(existing.ownerUid)
+        ? existing.ownerUid
+        : auth.currentUser?.uid || '';
 
-    // Preserve immutable fields and rewrite cleanly so legacy stray keys never fail hasOnly
-    await setDoc(tenantRef, {
-      id: tenantId,
-      ownerUid: safeOwnerUid,
-      slug: preservedSlug,
-      ...mergedFields,
-      createdAt: isValidFirestoreTimestamp(existing.createdAt)
-        ? existing.createdAt
-        : serverTimestamp(),
-      updatedAt: serverTimestamp(),
+      const canPatchInPlace =
+        existing.id === tenantId &&
+        isValidDocId(existing.ownerUid) &&
+        isValidSlugStr(existing.slug) &&
+        isValidFirestoreTimestamp(existing.createdAt) &&
+        hasOnlyAllowedKeys(existing as unknown as Record<string, unknown>, TENANT_ALLOWED_KEYS);
+
+      const writeFullCleanDoc = async () => {
+        await setDoc(tenantRef, {
+          id: tenantId,
+          ownerUid: safeOwnerUid,
+          slug: preservedSlug,
+          ...mergedFields,
+          createdAt: isValidFirestoreTimestamp(existing.createdAt)
+            ? existing.createdAt
+            : serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      };
+
+      if (canPatchInPlace) {
+        try {
+          // Use updateDoc so immutable fields (id, ownerUid, slug, createdAt) stay server-side exact
+          await updateDoc(tenantRef, {
+            ...mergedFields,
+            updatedAt: serverTimestamp(),
+          });
+        } catch {
+          // Heal document with full clean schema if patch failed due to legacy field mismatch
+          await writeFullCleanDoc();
+        }
+      } else {
+        // Clean rewrite when healing legacy documents with missing/stray fields
+        await writeFullCleanDoc();
+      }
     });
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, path);
@@ -686,7 +834,7 @@ export async function saveProperty(
       summary: clampStr(property.summary, 600),
       features: clampStrArray(property.features, 40, 200),
       differentials: clampStrArray(property.differentials, 25, 200),
-      coverImage: clampStr(property.coverImage, 1000),
+      coverImage: clampStr(property.coverImage, 2048),
       images: clampMapArray(property.images, 50),
       videos: clampMapArray(property.videos, 12),
       panorama360Images: clampMapArray(property.panorama360Images, 20),
@@ -700,45 +848,61 @@ export async function saveProperty(
       whatsappCopy: clampStr(property.whatsappCopy, 1000),
     });
 
-    const ref = doc(db, 'properties', property.id);
-    if (isNew) {
-      await setDoc(ref, {
-        id: property.id,
-        tenantId: property.tenantId,
-        ownerUid: property.ownerUid || auth.currentUser?.uid || '',
-        ...mutableFields,
-        viewsCount: clampNumber(property.viewsCount, 0),
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-      return;
-    }
+    await withAdminWriteRetry(async () => {
+      const ref = doc(db, 'properties', property.id);
+      if (isNew) {
+        await setDoc(ref, {
+          id: property.id,
+          tenantId: property.tenantId,
+          ownerUid: property.ownerUid || auth.currentUser?.uid || '',
+          ...mutableFields,
+          viewsCount: clampNumber(property.viewsCount, 0),
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        return;
+      }
 
-    const snap = await getDoc(ref);
-    if (!snap.exists()) {
-      await setDoc(ref, {
-        id: property.id,
-        tenantId: property.tenantId,
-        ownerUid: property.ownerUid || auth.currentUser?.uid || '',
-        ...mutableFields,
-        viewsCount: clampNumber(property.viewsCount, 0),
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-      return;
-    }
+      const snap = await getDocFresh(ref);
+      if (!snap.exists()) {
+        await setDoc(ref, {
+          id: property.id,
+          tenantId: property.tenantId,
+          ownerUid: property.ownerUid || auth.currentUser?.uid || '',
+          ...mutableFields,
+          viewsCount: clampNumber(property.viewsCount, 0),
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        return;
+      }
 
-    const existing = snap.data() as Property & { createdAt?: unknown };
-    await setDoc(ref, {
-      id: property.id,
-      tenantId: isValidDocId(existing.tenantId) ? existing.tenantId : property.tenantId,
-      ownerUid: isValidDocId(existing.ownerUid)
-        ? existing.ownerUid
-        : (isValidDocId(property.ownerUid) ? property.ownerUid : (auth.currentUser?.uid || '')),
-      ...mutableFields,
-      viewsCount: clampNumber(existing.viewsCount ?? property.viewsCount, 0),
-      createdAt: isValidFirestoreTimestamp(existing.createdAt) ? existing.createdAt : serverTimestamp(),
-      updatedAt: serverTimestamp(),
+      const existing = snap.data() as Property & { createdAt?: unknown };
+      const canPatchInPlace =
+        existing.id === property.id &&
+        isValidDocId(existing.tenantId) &&
+        isValidDocId(existing.ownerUid) &&
+        isValidFirestoreTimestamp(existing.createdAt) &&
+        hasOnlyAllowedKeys(existing as unknown as Record<string, unknown>, PROPERTY_ALLOWED_KEYS);
+
+      if (canPatchInPlace) {
+        await updateDoc(ref, {
+          ...mutableFields,
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await setDoc(ref, {
+          id: property.id,
+          tenantId: isValidDocId(existing.tenantId) ? existing.tenantId : property.tenantId,
+          ownerUid: isValidDocId(existing.ownerUid)
+            ? existing.ownerUid
+            : (isValidDocId(property.ownerUid) ? property.ownerUid : (auth.currentUser?.uid || '')),
+          ...mutableFields,
+          viewsCount: clampNumber(existing.viewsCount ?? property.viewsCount, 0),
+          createdAt: isValidFirestoreTimestamp(existing.createdAt) ? existing.createdAt : serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
     });
   } catch (err) {
     handleFirestoreError(err, isNew ? OperationType.CREATE : OperationType.UPDATE, path);
@@ -747,7 +911,7 @@ export async function saveProperty(
 
 export async function deleteProperty(propertyId: string): Promise<void> {
   try {
-    await deleteDoc(doc(db, 'properties', propertyId));
+    await withAdminWriteRetry(() => deleteDoc(doc(db, 'properties', propertyId)));
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, `properties/${propertyId}`);
   }
@@ -810,7 +974,7 @@ export async function saveDevelopment(
       priceFrom: clampNumber(dev.priceFrom, 0),
       description: clampStr(dev.description, 8000),
       technicalSpecs: clampStrArray(dev.technicalSpecs, 30, 200),
-      coverImage: clampStr(dev.coverImage, 1000),
+      coverImage: clampStr(dev.coverImage, 2048),
       images: clampMapArray(dev.images, 40),
       floorPlans: clampMapArray(dev.floorPlans, 20),
       videos: clampMapArray(dev.videos, 10),
@@ -820,42 +984,58 @@ export async function saveDevelopment(
       seoDescription: clampStr(dev.seoDescription, 320),
     });
 
-    const ref = doc(db, 'developments', dev.id);
-    if (isNew) {
-      await setDoc(ref, {
-        id: dev.id,
-        tenantId: dev.tenantId,
-        ownerUid: dev.ownerUid || auth.currentUser?.uid || '',
-        ...mutableFields,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-      return;
-    }
+    await withAdminWriteRetry(async () => {
+      const ref = doc(db, 'developments', dev.id);
+      if (isNew) {
+        await setDoc(ref, {
+          id: dev.id,
+          tenantId: dev.tenantId,
+          ownerUid: dev.ownerUid || auth.currentUser?.uid || '',
+          ...mutableFields,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        return;
+      }
 
-    const snap = await getDoc(ref);
-    if (!snap.exists()) {
-      await setDoc(ref, {
-        id: dev.id,
-        tenantId: dev.tenantId,
-        ownerUid: dev.ownerUid || auth.currentUser?.uid || '',
-        ...mutableFields,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-      return;
-    }
+      const snap = await getDocFresh(ref);
+      if (!snap.exists()) {
+        await setDoc(ref, {
+          id: dev.id,
+          tenantId: dev.tenantId,
+          ownerUid: dev.ownerUid || auth.currentUser?.uid || '',
+          ...mutableFields,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        return;
+      }
 
-    const existing = snap.data() as Development & { createdAt?: unknown };
-    await setDoc(ref, {
-      id: dev.id,
-      tenantId: isValidDocId(existing.tenantId) ? existing.tenantId : dev.tenantId,
-      ownerUid: isValidDocId(existing.ownerUid)
-        ? existing.ownerUid
-        : (isValidDocId(dev.ownerUid) ? dev.ownerUid : (auth.currentUser?.uid || '')),
-      ...mutableFields,
-      createdAt: isValidFirestoreTimestamp(existing.createdAt) ? existing.createdAt : serverTimestamp(),
-      updatedAt: serverTimestamp(),
+      const existing = snap.data() as Development & { createdAt?: unknown };
+      const canPatchInPlace =
+        existing.id === dev.id &&
+        isValidDocId(existing.tenantId) &&
+        isValidDocId(existing.ownerUid) &&
+        isValidFirestoreTimestamp(existing.createdAt) &&
+        hasOnlyAllowedKeys(existing as unknown as Record<string, unknown>, DEVELOPMENT_ALLOWED_KEYS);
+
+      if (canPatchInPlace) {
+        await updateDoc(ref, {
+          ...mutableFields,
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await setDoc(ref, {
+          id: dev.id,
+          tenantId: isValidDocId(existing.tenantId) ? existing.tenantId : dev.tenantId,
+          ownerUid: isValidDocId(existing.ownerUid)
+            ? existing.ownerUid
+            : (isValidDocId(dev.ownerUid) ? dev.ownerUid : (auth.currentUser?.uid || '')),
+          ...mutableFields,
+          createdAt: isValidFirestoreTimestamp(existing.createdAt) ? existing.createdAt : serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
     });
   } catch (err) {
     handleFirestoreError(err, isNew ? OperationType.CREATE : OperationType.UPDATE, path);
@@ -864,7 +1044,7 @@ export async function saveDevelopment(
 
 export async function deleteDevelopment(id: string): Promise<void> {
   try {
-    await deleteDoc(doc(db, 'developments', id));
+    await withAdminWriteRetry(() => deleteDoc(doc(db, 'developments', id)));
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, `developments/${id}`);
   }
@@ -922,7 +1102,7 @@ export async function saveLandingPage(
       template: validTemplates.includes(lp.template) ? lp.template : 'editorial-luxo',
       title: clampReqStr(lp.title, 180, 'Oferta Exclusiva'),
       subtitle: clampStr(lp.subtitle, 400),
-      heroImage: clampStr(lp.heroImage, 1000),
+      heroImage: clampStr(lp.heroImage, 2048),
       description: clampStr(lp.description, 6000),
       ctaText: clampStr(lp.ctaText, 80),
       accentColor: clampStr(lp.accentColor, 30),
@@ -932,48 +1112,64 @@ export async function saveLandingPage(
       seoDescription: clampStr(lp.seoDescription, 320),
     });
 
-    const ref = doc(db, 'landingPages', lp.id);
-    if (isNew) {
-      await setDoc(ref, {
-        id: lp.id,
-        tenantId: lp.tenantId,
-        ownerUid: lp.ownerUid || auth.currentUser?.uid || '',
-        ...mutableFields,
-        viewsCount: clampNumber(lp.viewsCount, 0),
-        leadsCount: clampNumber(lp.leadsCount, 0),
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-      return;
-    }
+    await withAdminWriteRetry(async () => {
+      const ref = doc(db, 'landingPages', lp.id);
+      if (isNew) {
+        await setDoc(ref, {
+          id: lp.id,
+          tenantId: lp.tenantId,
+          ownerUid: lp.ownerUid || auth.currentUser?.uid || '',
+          ...mutableFields,
+          viewsCount: clampNumber(lp.viewsCount, 0),
+          leadsCount: clampNumber(lp.leadsCount, 0),
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        return;
+      }
 
-    const snap = await getDoc(ref);
-    if (!snap.exists()) {
-      await setDoc(ref, {
-        id: lp.id,
-        tenantId: lp.tenantId,
-        ownerUid: lp.ownerUid || auth.currentUser?.uid || '',
-        ...mutableFields,
-        viewsCount: clampNumber(lp.viewsCount, 0),
-        leadsCount: clampNumber(lp.leadsCount, 0),
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-      return;
-    }
+      const snap = await getDocFresh(ref);
+      if (!snap.exists()) {
+        await setDoc(ref, {
+          id: lp.id,
+          tenantId: lp.tenantId,
+          ownerUid: lp.ownerUid || auth.currentUser?.uid || '',
+          ...mutableFields,
+          viewsCount: clampNumber(lp.viewsCount, 0),
+          leadsCount: clampNumber(lp.leadsCount, 0),
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        return;
+      }
 
-    const existing = snap.data() as LandingPage & { createdAt?: unknown };
-    await setDoc(ref, {
-      id: lp.id,
-      tenantId: isValidDocId(existing.tenantId) ? existing.tenantId : lp.tenantId,
-      ownerUid: isValidDocId(existing.ownerUid)
-        ? existing.ownerUid
-        : (isValidDocId(lp.ownerUid) ? lp.ownerUid : (auth.currentUser?.uid || '')),
-      ...mutableFields,
-      viewsCount: clampNumber(existing.viewsCount ?? lp.viewsCount, 0),
-      leadsCount: clampNumber(existing.leadsCount ?? lp.leadsCount, 0),
-      createdAt: isValidFirestoreTimestamp(existing.createdAt) ? existing.createdAt : serverTimestamp(),
-      updatedAt: serverTimestamp(),
+      const existing = snap.data() as LandingPage & { createdAt?: unknown };
+      const canPatchInPlace =
+        existing.id === lp.id &&
+        isValidDocId(existing.tenantId) &&
+        isValidDocId(existing.ownerUid) &&
+        isValidFirestoreTimestamp(existing.createdAt) &&
+        hasOnlyAllowedKeys(existing as unknown as Record<string, unknown>, LANDING_PAGE_ALLOWED_KEYS);
+
+      if (canPatchInPlace) {
+        await updateDoc(ref, {
+          ...mutableFields,
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await setDoc(ref, {
+          id: lp.id,
+          tenantId: isValidDocId(existing.tenantId) ? existing.tenantId : lp.tenantId,
+          ownerUid: isValidDocId(existing.ownerUid)
+            ? existing.ownerUid
+            : (isValidDocId(lp.ownerUid) ? lp.ownerUid : (auth.currentUser?.uid || '')),
+          ...mutableFields,
+          viewsCount: clampNumber(existing.viewsCount ?? lp.viewsCount, 0),
+          leadsCount: clampNumber(existing.leadsCount ?? lp.leadsCount, 0),
+          createdAt: isValidFirestoreTimestamp(existing.createdAt) ? existing.createdAt : serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
     });
   } catch (err) {
     handleFirestoreError(err, isNew ? OperationType.CREATE : OperationType.UPDATE, path);
@@ -982,7 +1178,7 @@ export async function saveLandingPage(
 
 export async function deleteLandingPage(id: string): Promise<void> {
   try {
-    await deleteDoc(doc(db, 'landingPages', id));
+    await withAdminWriteRetry(() => deleteDoc(doc(db, 'landingPages', id)));
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, `landingPages/${id}`);
   }
@@ -1040,42 +1236,58 @@ export async function saveTestimonial(
       status: item.status === 'published' ? 'published' : 'draft',
     });
 
-    const ref = doc(db, 'testimonials', item.id);
-    if (isNew) {
-      await setDoc(ref, {
-        id: item.id,
-        tenantId: item.tenantId,
-        ownerUid: item.ownerUid || auth.currentUser?.uid || '',
-        ...mutableFields,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-      return;
-    }
+    await withAdminWriteRetry(async () => {
+      const ref = doc(db, 'testimonials', item.id);
+      if (isNew) {
+        await setDoc(ref, {
+          id: item.id,
+          tenantId: item.tenantId,
+          ownerUid: item.ownerUid || auth.currentUser?.uid || '',
+          ...mutableFields,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        return;
+      }
 
-    const snap = await getDoc(ref);
-    if (!snap.exists()) {
-      await setDoc(ref, {
-        id: item.id,
-        tenantId: item.tenantId,
-        ownerUid: item.ownerUid || auth.currentUser?.uid || '',
-        ...mutableFields,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-      return;
-    }
+      const snap = await getDocFresh(ref);
+      if (!snap.exists()) {
+        await setDoc(ref, {
+          id: item.id,
+          tenantId: item.tenantId,
+          ownerUid: item.ownerUid || auth.currentUser?.uid || '',
+          ...mutableFields,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        return;
+      }
 
-    const existing = snap.data() as Testimonial & { createdAt?: unknown };
-    await setDoc(ref, {
-      id: item.id,
-      tenantId: isValidDocId(existing.tenantId) ? existing.tenantId : item.tenantId,
-      ownerUid: isValidDocId(existing.ownerUid)
-        ? existing.ownerUid
-        : (isValidDocId(item.ownerUid) ? item.ownerUid : (auth.currentUser?.uid || '')),
-      ...mutableFields,
-      createdAt: isValidFirestoreTimestamp(existing.createdAt) ? existing.createdAt : serverTimestamp(),
-      updatedAt: serverTimestamp(),
+      const existing = snap.data() as Testimonial & { createdAt?: unknown };
+      const canPatchInPlace =
+        existing.id === item.id &&
+        isValidDocId(existing.tenantId) &&
+        isValidDocId(existing.ownerUid) &&
+        isValidFirestoreTimestamp(existing.createdAt) &&
+        hasOnlyAllowedKeys(existing as unknown as Record<string, unknown>, TESTIMONIAL_ALLOWED_KEYS);
+
+      if (canPatchInPlace) {
+        await updateDoc(ref, {
+          ...mutableFields,
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await setDoc(ref, {
+          id: item.id,
+          tenantId: isValidDocId(existing.tenantId) ? existing.tenantId : item.tenantId,
+          ownerUid: isValidDocId(existing.ownerUid)
+            ? existing.ownerUid
+            : (isValidDocId(item.ownerUid) ? item.ownerUid : (auth.currentUser?.uid || '')),
+          ...mutableFields,
+          createdAt: isValidFirestoreTimestamp(existing.createdAt) ? existing.createdAt : serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
     });
   } catch (err) {
     handleFirestoreError(err, isNew ? OperationType.CREATE : OperationType.UPDATE, `testimonials/${item.id}`);
@@ -1084,7 +1296,7 @@ export async function saveTestimonial(
 
 export async function deleteTestimonial(id: string): Promise<void> {
   try {
-    await deleteDoc(doc(db, 'testimonials', id));
+    await withAdminWriteRetry(() => deleteDoc(doc(db, 'testimonials', id)));
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, `testimonials/${id}`);
   }
@@ -1154,39 +1366,58 @@ export function subscribeManagedLeads(
 
 export async function updateLeadStatus(leadId: string, status: Lead['status'], notes: string): Promise<void> {
   try {
-    const ref = doc(db, 'leads', leadId);
-    const snap = await getDoc(ref);
-    if (!snap.exists()) {
-      throw new Error('Lead não encontrado.');
-    }
-    const existing = snap.data() as Lead & { createdAt?: unknown };
-    const validInterests = ['comprar', 'alugar', 'vender', 'investir', 'visita', 'empreendimento', 'informacoes'];
-    const validStatuses: Lead['status'][] = ['new', 'in_progress', 'scheduled', 'converted', 'lost'];
+    await withAdminWriteRetry(async () => {
+      const ref = doc(db, 'leads', leadId);
+      const snap = await getDocFresh(ref);
+      if (!snap.exists()) {
+        throw new Error('Lead não encontrado.');
+      }
+      const existing = snap.data() as Lead & { createdAt?: unknown };
+      const validInterests = ['comprar', 'alugar', 'vender', 'investir', 'visita', 'empreendimento', 'informacoes'];
+      const validStatuses: Lead['status'][] = ['new', 'in_progress', 'scheduled', 'converted', 'lost'];
 
-    await setDoc(ref, {
-      ...cleanUndefined({
-        id: leadId,
-        tenantId: existing.tenantId,
-        ownerUid: isValidDocId(existing.ownerUid) ? existing.ownerUid : (auth.currentUser?.uid || ''),
-        name: clampReqStr(existing.name, 120, 'Interessado'),
-        phone: clampReqStr(existing.phone, 40, 'Não informado'),
-        email: clampStr(existing.email, 200),
-        interest: validInterests.includes(existing.interest) ? existing.interest : 'informacoes',
-        propertyId: clampStr(existing.propertyId, 128),
-        propertyTitle: clampStr(existing.propertyTitle, 200),
-        developmentId: clampStr(existing.developmentId, 128),
-        landingPageId: clampStr(existing.landingPageId, 128),
-        source: clampStr(existing.source, 100),
-        utmSource: clampStr(existing.utmSource, 100),
-        utmMedium: clampStr(existing.utmMedium, 100),
-        utmCampaign: clampStr(existing.utmCampaign, 100),
-        message: clampStr(existing.message, 2000),
-        lgpdConsent: Boolean(existing.lgpdConsent),
-        status: validStatuses.includes(status) ? status : existing.status || 'new',
-        notes: clampStr(notes, 2000),
-      }),
-      createdAt: isValidFirestoreTimestamp(existing.createdAt) ? existing.createdAt : serverTimestamp(),
-      updatedAt: serverTimestamp(),
+      const nextStatus = validStatuses.includes(status) ? status : existing.status || 'new';
+      const nextNotes = clampStr(notes, 2000);
+      const canPatchInPlace =
+        existing.id === leadId &&
+        isValidDocId(existing.tenantId) &&
+        isValidDocId(existing.ownerUid) &&
+        isValidFirestoreTimestamp(existing.createdAt) &&
+        hasOnlyAllowedKeys(existing as unknown as Record<string, unknown>, LEAD_ALLOWED_KEYS);
+
+      if (canPatchInPlace) {
+        await updateDoc(ref, {
+          status: nextStatus,
+          notes: nextNotes,
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await setDoc(ref, {
+          ...cleanUndefined({
+            id: leadId,
+            tenantId: existing.tenantId,
+            ownerUid: isValidDocId(existing.ownerUid) ? existing.ownerUid : (auth.currentUser?.uid || ''),
+            name: clampReqStr(existing.name, 120, 'Interessado'),
+            phone: clampReqStr(existing.phone, 40, 'Não informado'),
+            email: clampStr(existing.email, 200),
+            interest: validInterests.includes(existing.interest) ? existing.interest : 'informacoes',
+            propertyId: clampStr(existing.propertyId, 128),
+            propertyTitle: clampStr(existing.propertyTitle, 200),
+            developmentId: clampStr(existing.developmentId, 128),
+            landingPageId: clampStr(existing.landingPageId, 128),
+            source: clampStr(existing.source, 100),
+            utmSource: clampStr(existing.utmSource, 100),
+            utmMedium: clampStr(existing.utmMedium, 100),
+            utmCampaign: clampStr(existing.utmCampaign, 100),
+            message: clampStr(existing.message, 2000),
+            lgpdConsent: Boolean(existing.lgpdConsent),
+            status: nextStatus,
+            notes: nextNotes,
+          }),
+          createdAt: isValidFirestoreTimestamp(existing.createdAt) ? existing.createdAt : serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
     });
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, `leads/${leadId}`);
@@ -1195,7 +1426,7 @@ export async function updateLeadStatus(leadId: string, status: Lead['status'], n
 
 export async function deleteLead(leadId: string): Promise<void> {
   try {
-    await deleteDoc(doc(db, 'leads', leadId));
+    await withAdminWriteRetry(() => deleteDoc(doc(db, 'leads', leadId)));
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, `leads/${leadId}`);
   }
@@ -1283,42 +1514,58 @@ export async function saveCampaign(c: Omit<Campaign, 'createdAt' | 'updatedAt'>,
       budget: clampNumber(c.budget, 0),
     });
 
-    const ref = doc(db, 'campaigns', c.id);
-    if (isNew) {
-      await setDoc(ref, {
-        id: c.id,
-        tenantId: c.tenantId,
-        ownerUid: c.ownerUid || auth.currentUser?.uid || '',
-        ...mutableFields,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-      return;
-    }
+    await withAdminWriteRetry(async () => {
+      const ref = doc(db, 'campaigns', c.id);
+      if (isNew) {
+        await setDoc(ref, {
+          id: c.id,
+          tenantId: c.tenantId,
+          ownerUid: c.ownerUid || auth.currentUser?.uid || '',
+          ...mutableFields,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        return;
+      }
 
-    const snap = await getDoc(ref);
-    if (!snap.exists()) {
-      await setDoc(ref, {
-        id: c.id,
-        tenantId: c.tenantId,
-        ownerUid: c.ownerUid || auth.currentUser?.uid || '',
-        ...mutableFields,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-      return;
-    }
+      const snap = await getDocFresh(ref);
+      if (!snap.exists()) {
+        await setDoc(ref, {
+          id: c.id,
+          tenantId: c.tenantId,
+          ownerUid: c.ownerUid || auth.currentUser?.uid || '',
+          ...mutableFields,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        return;
+      }
 
-    const existing = snap.data() as Campaign & { createdAt?: unknown };
-    await setDoc(ref, {
-      id: c.id,
-      tenantId: isValidDocId(existing.tenantId) ? existing.tenantId : c.tenantId,
-      ownerUid: isValidDocId(existing.ownerUid)
-        ? existing.ownerUid
-        : (isValidDocId(c.ownerUid) ? c.ownerUid : (auth.currentUser?.uid || '')),
-      ...mutableFields,
-      createdAt: isValidFirestoreTimestamp(existing.createdAt) ? existing.createdAt : serverTimestamp(),
-      updatedAt: serverTimestamp(),
+      const existing = snap.data() as Campaign & { createdAt?: unknown };
+      const canPatchInPlace =
+        existing.id === c.id &&
+        isValidDocId(existing.tenantId) &&
+        isValidDocId(existing.ownerUid) &&
+        isValidFirestoreTimestamp(existing.createdAt) &&
+        hasOnlyAllowedKeys(existing as unknown as Record<string, unknown>, CAMPAIGN_ALLOWED_KEYS);
+
+      if (canPatchInPlace) {
+        await updateDoc(ref, {
+          ...mutableFields,
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await setDoc(ref, {
+          id: c.id,
+          tenantId: isValidDocId(existing.tenantId) ? existing.tenantId : c.tenantId,
+          ownerUid: isValidDocId(existing.ownerUid)
+            ? existing.ownerUid
+            : (isValidDocId(c.ownerUid) ? c.ownerUid : (auth.currentUser?.uid || '')),
+          ...mutableFields,
+          createdAt: isValidFirestoreTimestamp(existing.createdAt) ? existing.createdAt : serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
     });
   } catch (err) {
     handleFirestoreError(err, isNew ? OperationType.CREATE : OperationType.UPDATE, `campaigns/${c.id}`);
@@ -1327,7 +1574,7 @@ export async function saveCampaign(c: Omit<Campaign, 'createdAt' | 'updatedAt'>,
 
 export async function deleteCampaign(id: string): Promise<void> {
   try {
-    await deleteDoc(doc(db, 'campaigns', id));
+    await withAdminWriteRetry(() => deleteDoc(doc(db, 'campaigns', id)));
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, `campaigns/${id}`);
   }
@@ -1370,8 +1617,8 @@ export async function saveAiJob(job: Omit<AiJob, 'createdAt' | 'updatedAt'>): Pr
         durationSec: dur,
         aspectRatio: job.aspectRatio === '9:16' ? '9:16' : '16:9',
         status: job.status,
-        inputImageUrls: clampStrArray(job.inputImageUrls, 20, 1000),
-        outputUrl: clampStr(job.outputUrl, 1000),
+        inputImageUrls: clampStrArray(job.inputImageUrls, 20, 2048),
+        outputUrl: clampStr(job.outputUrl, 2048),
         errorMessage: clampStr(job.errorMessage, 500),
       }),
       createdAt: serverTimestamp(),

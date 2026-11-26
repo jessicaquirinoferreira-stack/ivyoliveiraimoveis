@@ -1,8 +1,14 @@
-import { initializeApp } from 'firebase/app';
+import { getApp, getApps, initializeApp } from 'firebase/app';
 import {
+  browserLocalPersistence,
+  browserPopupRedirectResolver,
+  browserSessionPersistence,
   EmailAuthProvider,
   getAuth,
   GoogleAuthProvider,
+  indexedDBLocalPersistence,
+  initializeAuth,
+  inMemoryPersistence,
   reauthenticateWithCredential,
   sendEmailVerification,
   sendPasswordResetEmail,
@@ -10,14 +16,55 @@ import {
   signInWithPopup,
   signOut,
   updatePassword,
+  type Auth,
   type User,
 } from 'firebase/auth';
-import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
+import {
+  doc,
+  getDocFromServer,
+  getFirestore,
+  initializeFirestore,
+  type Firestore,
+} from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
-const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
-export const auth = getAuth(app);
+const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+
+function createResilientFirestore(): Firestore {
+  try {
+    return initializeFirestore(
+      app,
+      {
+        experimentalAutoDetectLongPolling: true,
+      },
+      firebaseConfig.firestoreDatabaseId
+    );
+  } catch {
+    return getFirestore(app, firebaseConfig.firestoreDatabaseId);
+  }
+}
+
+function createResilientAuth(): Auth {
+  if (typeof window === 'undefined') {
+    return getAuth(app);
+  }
+  try {
+    return initializeAuth(app, {
+      persistence: [
+        indexedDBLocalPersistence,
+        browserLocalPersistence,
+        browserSessionPersistence,
+        inMemoryPersistence,
+      ],
+      popupRedirectResolver: browserPopupRedirectResolver,
+    });
+  } catch {
+    return getAuth(app);
+  }
+}
+
+export const auth = createResilientAuth();
+export const db = createResilientFirestore();
 export const googleProvider = new GoogleAuthProvider();
 
 export const PRIMARY_ADMIN_UID = 'HDHYeUap9ZUM2cJXiGzM1SDreQl2';
@@ -27,6 +74,7 @@ export const BOOTSTRAPPED_ADMIN_EMAILS = [
   'jonasjessicalove@gmail.com',
   'jonasweb2rj@gmail.com',
   'sandrodbillo@hotmail.com',
+  'ivyoliveiraimoveisrj@gmail.com',
   'admin@x.com',
 ];
 
@@ -35,7 +83,10 @@ export function isBootAdminUser(
 ): boolean {
   if (!user) return false;
   const normalizedEmail = user.email?.toLowerCase() || '';
-  if ((user.uid === 'HDHYeUap9ZUM2cJXiGzM1SDreQl2' || user.uid === '6zWtrk2KMVaBY2kW9aGe4FjbPu13') && normalizedEmail === PRIMARY_ADMIN_EMAIL) {
+  if (
+    (user.uid === 'HDHYeUap9ZUM2cJXiGzM1SDreQl2' || user.uid === '6zWtrk2KMVaBY2kW9aGe4FjbPu13') &&
+    normalizedEmail === PRIMARY_ADMIN_EMAIL
+  ) {
     return true;
   }
   return Boolean(BOOTSTRAPPED_ADMIN_EMAILS.includes(normalizedEmail));
@@ -105,12 +156,60 @@ export async function testFirestoreConnection(): Promise<boolean> {
   }
 }
 
+function getAuthErrorCode(err: unknown): string {
+  if (typeof err === 'object' && err !== null && 'code' in err) {
+    return String((err as { code?: unknown }).code || '');
+  }
+  return '';
+}
+
+async function withAuthNetworkRetry<T>(fn: () => Promise<T>, maxAttempts = 3): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      if (attempt === 1 && typeof auth.authStateReady === 'function') {
+        await auth.authStateReady().catch(() => {});
+      }
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      const code = getAuthErrorCode(err);
+      const isRetryable =
+        code === 'auth/network-request-failed' || code === 'auth/internal-error';
+      if (!isRetryable || attempt >= maxAttempts) {
+        throw err;
+      }
+      await new Promise((resolve) => setTimeout(resolve, attempt * 550));
+    }
+  }
+  throw lastError;
+}
+
+export async function diagnoseAuthNetworkFailure(): Promise<string> {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    return 'Seu dispositivo parece estar sem conexão com a internet. Reconecte e tente novamente.';
+  }
+  try {
+    const resp = await fetch('/api/health', { cache: 'no-store' });
+    if (resp.ok) {
+      return 'O site está online, mas este navegador não conseguiu alcançar o servidor de login do Google/Firebase (identitytoolkit.googleapis.com). Isso costuma ser causado por extensão do Chrome, VPN, antivírus ou perfil pausado — tente novamente ou abra /admin em uma janela anônima.';
+    }
+  } catch {
+    // Same-origin also unreachable
+  }
+  return 'Falha de conexão com o serviço de autenticação. Verifique sua internet ou tente abrir /admin em uma janela anônima.';
+}
+
 export async function signInWithEmailPassword(email: string, password: string) {
-  return signInWithEmailAndPassword(auth, email.trim().toLowerCase(), password);
+  return withAuthNetworkRetry(() =>
+    signInWithEmailAndPassword(auth, email.trim().toLowerCase(), password)
+  );
 }
 
 export async function sendAdminPasswordReset(email: string) {
-  return sendPasswordResetEmail(auth, email.trim().toLowerCase());
+  return withAuthNetworkRetry(() =>
+    sendPasswordResetEmail(auth, email.trim().toLowerCase())
+  );
 }
 
 export async function sendAdminEmailVerification(user: User) {

@@ -3,9 +3,8 @@ import { onAuthStateChanged, User } from 'firebase/auth';
 import {
   auth,
   changeAdminPassword,
-  PRIMARY_ADMIN_EMAIL,
-  PRIMARY_ADMIN_UID,
-  sendAdminEmailVerification,
+  diagnoseAuthNetworkFailure,
+  isBootAdminUser,
   sendAdminPasswordReset,
   signInWithEmailPassword,
   signInWithGoogle,
@@ -38,11 +37,14 @@ interface AppContextValue {
 
 const AppContext = createContext<AppContextValue | null>(null);
 
+function getAuthCode(err: unknown): string {
+  return typeof err === 'object' && err !== null && 'code' in err
+    ? String((err as { code?: unknown }).code || '')
+    : '';
+}
+
 function mapFirebaseAuthError(err: unknown): string {
-  const code =
-    typeof err === 'object' && err !== null && 'code' in err
-      ? String((err as { code?: unknown }).code || '')
-      : '';
+  const code = getAuthCode(err);
   switch (code) {
     case 'auth/invalid-credential':
     case 'auth/wrong-password':
@@ -59,11 +61,16 @@ function mapFirebaseAuthError(err: unknown): string {
     case 'auth/operation-not-allowed':
       return 'O método de login por E-mail/Senha precisa estar ativado no Firebase Authentication.';
     case 'auth/unauthorized-domain':
-      return 'Este domínio precisa estar autorizado nas configurações do Firebase Authentication.';
+      return 'O login com Google exige autorizar este domínio no Firebase Console (Authentication → Settings → Authorized domains). Utilize o login por E-mail e Senha acima, que funciona imediatamente em qualquer domínio Vercel.';
+    case 'auth/popup-closed-by-user':
+    case 'auth/cancelled-popup-request':
+      return 'Janela de login do Google fechada antes da conclusão. Tente novamente ou entre com E-mail e Senha.';
+    case 'auth/popup-blocked':
+      return 'O navegador bloqueou o pop-up do Google. Libere pop-ups para este site ou entre com E-mail e Senha.';
     case 'auth/too-many-requests':
       return 'Muitas tentativas seguidas. Aguarde alguns instantes e tente novamente.';
     case 'auth/network-request-failed':
-      return 'Falha de conexão com o serviço de autenticação. Verifique sua internet.';
+      return 'Falha de conexão com o serviço de autenticação. Verifique sua internet ou tente abrir em uma janela anônima.';
     default:
       return err instanceof Error ? err.message : 'Não foi possível autenticar no painel administrativo.';
   }
@@ -94,18 +101,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [tenant, setTenant] = useState<Tenant>(DEFAULT_TENANT);
   const [firestoreConnected, setFirestoreConnected] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
+
   const authSeqRef = useRef(0);
-  const verificationSentUidRef = useRef<string | null>(null);
+  const inFlightHydrationRef = useRef<{ uid: string; promise: Promise<boolean> } | null>(null);
 
   useEffect(() => {
     testFirestoreConnection().then(setFirestoreConnected);
   }, []);
 
   const hydrateSession = useCallback(async (firebaseUser: User | null): Promise<boolean> => {
-    const seq = ++authSeqRef.current;
-    setAuthError(null);
-
     if (!firebaseUser) {
+      inFlightHydrationRef.current = null;
+      const seq = ++authSeqRef.current;
+      setAuthError(null);
       setUser(null);
       setProfile(null);
       setIsAdmin(false);
@@ -116,31 +124,76 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return false;
     }
 
-    try {
-      const boot = await bootstrapUserAndTenant(firebaseUser);
-      if (seq !== authSeqRef.current) return false;
-      setProfile(boot.profile);
-      setIsAdmin(boot.isAdmin);
-      setActiveTenantId(boot.profile.tenantId);
-      setTenant(boot.tenant);
-      setUser(firebaseUser);
-      setAuthReady(true);
-      return true;
-    } catch (err) {
-      if (seq !== authSeqRef.current) return false;
-      console.error('Bootstrap error:', err);
-      setProfile(null);
-      setIsAdmin(false);
-      setUser(null);
-      setAuthError(formatBootstrapError(err));
-      setAuthReady(true);
-      return false;
+    // Deduplicate concurrent calls from onAuthStateChanged + loginWithEmailPassword/loginWithGoogle
+    if (inFlightHydrationRef.current && inFlightHydrationRef.current.uid === firebaseUser.uid) {
+      return inFlightHydrationRef.current.promise;
     }
+
+    const seq = ++authSeqRef.current;
+    setAuthError(null);
+
+    const run = (async (): Promise<boolean> => {
+      try {
+        let boot;
+        try {
+          boot = await bootstrapUserAndTenant(firebaseUser);
+        } catch (firstErr) {
+          // Force-refresh Firebase ID token once in case token claims were stale
+          await firebaseUser.getIdToken(true).catch(() => {});
+          try {
+            boot = await bootstrapUserAndTenant(firebaseUser);
+          } catch (secondErr) {
+            // Never lock out a verified bootstrapped platform admin on transient network errors
+            if (isBootAdminUser(firebaseUser)) {
+              console.warn('Boot admin fallback hydration after transient error:', secondErr);
+              boot = {
+                profile: {
+                  uid: firebaseUser.uid,
+                  email: firebaseUser.email?.toLowerCase() || 'sandrodbillo@hotmail.com',
+                  displayName: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'Administrador',
+                  photoURL: firebaseUser.photoURL || '',
+                  role: 'admin' as const,
+                  tenantId: DEFAULT_TENANT_ID,
+                },
+                tenant: DEFAULT_TENANT,
+                isAdmin: true,
+              };
+            } else {
+              throw firstErr;
+            }
+          }
+        }
+
+        if (seq !== authSeqRef.current) return false;
+        setProfile(boot.profile);
+        setIsAdmin(boot.isAdmin);
+        setActiveTenantId(boot.profile.tenantId);
+        setTenant(boot.tenant);
+        setUser(firebaseUser);
+        setAuthReady(true);
+        return true;
+      } catch (err) {
+        if (seq !== authSeqRef.current) return false;
+        console.error('Bootstrap error:', err);
+        setProfile(null);
+        setIsAdmin(false);
+        setUser(null);
+        setAuthError(formatBootstrapError(err));
+        setAuthReady(true);
+        return false;
+      } finally {
+        if (inFlightHydrationRef.current?.uid === firebaseUser.uid) {
+          inFlightHydrationRef.current = null;
+        }
+      }
+    })();
+
+    inFlightHydrationRef.current = { uid: firebaseUser.uid, promise: run };
+    return run;
   }, []);
 
   useEffect(() => {
     const unsubAuth = onAuthStateChanged(auth, async (firebaseUser) => {
-      setAuthReady(false);
       await hydrateSession(firebaseUser);
     });
     return () => unsubAuth();
@@ -183,7 +236,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const cred = await signInWithEmailPassword(email, password);
       return await hydrateSession(cred.user);
     } catch (err) {
-      setAuthError(mapFirebaseAuthError(err));
+      if (getAuthCode(err) === 'auth/network-request-failed') {
+        const diagnostic = await diagnoseAuthNetworkFailure();
+        setAuthError(diagnostic);
+      } else {
+        setAuthError(mapFirebaseAuthError(err));
+      }
       return false;
     } finally {
       setAuthSubmitting(false);
@@ -194,6 +252,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     try {
       await sendAdminPasswordReset(email);
     } catch (err) {
+      if (getAuthCode(err) === 'auth/network-request-failed') {
+        throw new Error(await diagnoseAuthNetworkFailure());
+      }
       throw new Error(mapFirebaseAuthError(err));
     }
   };
@@ -213,13 +274,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const cred = await signInWithGoogle();
       await hydrateSession(cred.user);
     } catch (err) {
-      setAuthError(mapFirebaseAuthError(err));
+      if (getAuthCode(err) === 'auth/network-request-failed') {
+        const diagnostic = await diagnoseAuthNetworkFailure();
+        setAuthError(diagnostic);
+      } else {
+        setAuthError(mapFirebaseAuthError(err));
+      }
     } finally {
       setAuthSubmitting(false);
     }
   };
 
   const logout = async () => {
+    inFlightHydrationRef.current = null;
     await signOutFirebase();
     setActiveTenantId(DEFAULT_TENANT_ID);
   };
