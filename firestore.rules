@@ -129,7 +129,7 @@ service cloud.firestore {
         (!('creci' in data) || isStr(data.creci, 60)) &&
         isReqStr(data.city, 80) &&
         (!('state' in data) || isStr(data.state, 20)) &&
-        (!('regions' in data) || isStrList(data.regions, 30)) &&
+        (!('regions' in data) || isStrList(data.regions, 50)) &&
         (!('whatsapp' in data) || isStr(data.whatsapp, 30)) &&
         (!('phone' in data) || isStr(data.phone, 30)) &&
         (!('email' in data) || isStr(data.email, 200)) &&

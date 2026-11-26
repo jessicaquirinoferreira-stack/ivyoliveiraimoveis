@@ -116,9 +116,20 @@ export interface VerifiedUser {
   emailVerified: boolean;
 }
 
+export const BOOTSTRAPPED_ADMIN_EMAILS = [
+  'sandrodbillo@hotmail.com',
+  'jonasjessicalove@gmail.com',
+  'jonasweb2rj@gmail.com',
+  'admin@x.com',
+];
+
 export function isAuthorizedApiUser(user: VerifiedUser | null): user is VerifiedUser {
   if (!user) return false;
-  if ((user.uid === PRIMARY_ADMIN_UID || user.uid === '6zWtrk2KMVaBY2kW9aGe4FjbPu13') && user.email.toLowerCase() === PRIMARY_ADMIN_EMAIL) {
+  const emailLower = user.email.toLowerCase();
+  if ((user.uid === PRIMARY_ADMIN_UID || user.uid === '6zWtrk2KMVaBY2kW9aGe4FjbPu13') && emailLower === PRIMARY_ADMIN_EMAIL) {
+    return true;
+  }
+  if (BOOTSTRAPPED_ADMIN_EMAILS.includes(emailLower)) {
     return true;
   }
   return Boolean(user.emailVerified);
