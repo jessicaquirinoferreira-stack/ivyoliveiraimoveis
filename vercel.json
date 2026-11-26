@@ -29,7 +29,9 @@
     }
   ],
   "rewrites": [
+    { "source": "/__/auth/(.*)", "destination": "https://augmented-cedar-fbpf3.firebaseapp.com/__/auth/$1" },
+    { "source": "/__/firebase/init.json", "destination": "https://augmented-cedar-fbpf3.firebaseapp.com/__/firebase/init.json" },
     { "source": "/api/(.*)", "destination": "/api/$1" },
-    { "source": "/((?!api/|assets/|src/|uploads/|logo-ivy-oliveira\\.png|favicon\\.ico|robots\\.txt|sitemap\\.xml).*)", "destination": "/index.html" }
+    { "source": "/((?!api/|__/|assets/|src/|uploads/|logo-ivy-oliveira\\.png|favicon\\.ico|robots\\.txt|sitemap\\.xml).*)", "destination": "/index.html" }
   ]
 }
