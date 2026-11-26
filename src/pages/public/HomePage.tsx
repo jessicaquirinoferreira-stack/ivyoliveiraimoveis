@@ -37,32 +37,32 @@ const REGION_PROFILES: Record<string, { subtitle: string; focus: string; image: 
   'Zona Sul': {
     subtitle: 'Tradição arquitetônica entre o oceano e a Mata Atlântica.',
     focus: 'Apartamentos de planta generosa, vistas panorâmicas e ruas arborizadas.',
-    image: '/src/assets/images/hero_rio_architecture_1795532252718.jpg',
+    image: '/assets/regions/zona-sul.jpg',
   },
   Leblon: {
     subtitle: 'Exclusividade costeira, gastronomia autoral e alta liquidez patrimonial.',
     focus: 'Coberturas duplex, edifícios boutique e quadra da praia.',
-    image: '/src/assets/images/hero_penthouse_living_1795532252931.jpg',
+    image: '/assets/regions/leblon.jpg',
   },
   Ipanema: {
     subtitle: 'Ícone modernista com vida cultural vibrante e luz atlântica.',
     focus: 'Residências assinadas com varanda integrada e arquitetura atemporal.',
-    image: '/src/assets/images/editorial_development_1795532253234.jpg',
+    image: '/assets/regions/ipanema.jpg',
   },
   Lagoa: {
     subtitle: 'Silêncio contemplativo com vista frontal para o espelho d’água e Cristo Redentor.',
     focus: 'Plantas amplas, iluminação natural abundante e ventilação cruzada.',
-    image: '/src/assets/images/editorial_advisory_studio_1795532253992.jpg',
+    image: '/assets/regions/lagoa.jpg',
   },
   'São Conrado': {
     subtitle: 'Privacidade entre a Pedra da Gávea e o mar aberto.',
     focus: 'Casas suspensas, terrenos reservados e condomínios com segurança 24h.',
-    image: '/src/assets/images/hero_rio_architecture_1795532252718.jpg',
+    image: '/assets/regions/sao-conrado.jpg',
   },
   'Barra da Tijuca': {
     subtitle: 'Condomínios contemporâneos, amplas áreas de lazer e novos lançamentos.',
     focus: 'Casas contemporâneas de grande metragem e residenciais de frente para o mar.',
-    image: '/src/assets/images/editorial_development_1795532253234.jpg',
+    image: '/assets/regions/barra-da-tijuca.jpg',
   },
 };
 

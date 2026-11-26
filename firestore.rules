@@ -28,26 +28,33 @@ service cloud.firestore {
     function isSignedIn() {
       return request.auth != null;
     }
-    function isPrimaryAdminUid() {
+    function hasAuthEmail() {
       return isSignedIn() &&
+        'email' in request.auth.token &&
+        request.auth.token.email is string;
+    }
+    function isPrimaryAdminUid() {
+      return hasAuthEmail() &&
         (request.auth.uid == 'HDHYeUap9ZUM2cJXiGzM1SDreQl2' || request.auth.uid == '6zWtrk2KMVaBY2kW9aGe4FjbPu13') &&
-        request.auth.token.email == 'sandrodbillo@hotmail.com';
+        request.auth.token.email.lower() == 'sandrodbillo@hotmail.com';
     }
     function isVerified() {
-      return isPrimaryAdminUid() ||
-        request.auth.token.email == 'sandrodbillo@hotmail.com' ||
-        request.auth.token.email == 'jonasjessicalove@gmail.com' ||
-        request.auth.token.email == 'jonasweb2rj@gmail.com' ||
-        request.auth.token.email == 'admin@x.com' ||
-        (isSignedIn() && request.auth.token.email_verified == true);
+      return isPrimaryAdminUid() || (
+        hasAuthEmail() && (
+          request.auth.token.email.lower() == 'sandrodbillo@hotmail.com' ||
+          request.auth.token.email.lower() == 'jonasjessicalove@gmail.com' ||
+          request.auth.token.email.lower() == 'jonasweb2rj@gmail.com' ||
+          request.auth.token.email.lower() == 'admin@x.com'
+        )
+      ) || (isSignedIn() && 'email_verified' in request.auth.token && request.auth.token.email_verified == true);
     }
     function isBootstrappedAdmin() {
       return isPrimaryAdminUid() || (
-        isVerified() && (
-          request.auth.token.email == 'jonasjessicalove@gmail.com' ||
-          request.auth.token.email == 'jonasweb2rj@gmail.com' ||
-          request.auth.token.email == 'sandrodbillo@hotmail.com' ||
-          request.auth.token.email == 'admin@x.com'
+        hasAuthEmail() && (
+          request.auth.token.email.lower() == 'jonasjessicalove@gmail.com' ||
+          request.auth.token.email.lower() == 'jonasweb2rj@gmail.com' ||
+          request.auth.token.email.lower() == 'sandrodbillo@hotmail.com' ||
+          request.auth.token.email.lower() == 'admin@x.com'
         )
       );
     }
@@ -57,12 +64,17 @@ service cloud.firestore {
       );
     }
     function isOwner(uid) {
-      return isVerified() && request.auth.uid == uid;
+      return isVerified() && uid is string && request.auth.uid == uid;
     }
     function isTenantOwner(tenantId) {
       return isVerified() &&
         exists(/databases/$(database)/documents/tenants/$(tenantId)) &&
         get(/databases/$(database)/documents/tenants/$(tenantId)).data.ownerUid == request.auth.uid;
+    }
+    function preservesValidCreatedAt() {
+      return !('createdAt' in existing()) ||
+        !(existing().createdAt is timestamp) ||
+        incoming().createdAt == existing().createdAt;
     }
     function isStr(val, maxLen) {
       return val is string && val.size() <= maxLen;
@@ -416,11 +428,12 @@ service cloud.firestore {
         incoming().updatedAt == request.time &&
         (isAdmin() || (isOwner(uid) && incoming().role == 'broker'));
       allow update: if isValidId(uid) && isVerified() && isValidUserProfile(incoming()) &&
-        incoming().uid == existing().uid &&
-        incoming().createdAt == existing().createdAt &&
+        incoming().uid == uid &&
         incoming().updatedAt == request.time && (
-          isAdmin() ||
+          (isAdmin() && preservesValidCreatedAt()) ||
           (isOwner(uid) &&
+           incoming().uid == existing().uid &&
+           incoming().createdAt == existing().createdAt &&
            incoming().role == existing().role &&
            incoming().tenantId == existing().tenantId &&
            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'updatedAt']))
@@ -440,18 +453,22 @@ service cloud.firestore {
         incoming().updatedAt == request.time &&
         (isAdmin() || incoming().ownerUid == request.auth.uid);
       allow update: if isValidId(tenantId) && isVerified() && isValidTenant(incoming()) &&
-        incoming().id == existing().id &&
-        incoming().ownerUid == existing().ownerUid &&
-        incoming().createdAt == existing().createdAt &&
-        incoming().updatedAt == request.time &&
-        (isAdmin() || (isOwner(existing().ownerUid) && incoming().diff(existing()).affectedKeys().hasOnly([
-          'brandName', 'brokerName', 'creci', 'city', 'state', 'regions',
-          'whatsapp', 'phone', 'email', 'instagramHandle', 'instagramUrl', 'logoUrl', 'faviconUrl',
-          'heroTitle', 'heroSubtitle', 'heroCtaText', 'heroImages', 'aboutHeadline', 'aboutBio',
-          'aboutPhotoUrl', 'aboutExperienceYears', 'specialties', 'differentials', 'themePreset',
-          'themeConfig', 'seoTitle', 'seoDescription', 'ga4Id', 'gtmId', 'gscVerification',
-          'googleAdsId', 'lgpdPrivacyText', 'customDomain', 'status', 'updatedAt'
-        ])));
+        incoming().id == tenantId &&
+        incoming().updatedAt == request.time && (
+          (isAdmin() && preservesValidCreatedAt()) ||
+          (isOwner(existing().ownerUid) &&
+           incoming().id == existing().id &&
+           incoming().ownerUid == existing().ownerUid &&
+           incoming().createdAt == existing().createdAt &&
+           incoming().diff(existing()).affectedKeys().hasOnly([
+            'brandName', 'brokerName', 'creci', 'city', 'state', 'regions',
+            'whatsapp', 'phone', 'email', 'instagramHandle', 'instagramUrl', 'logoUrl', 'faviconUrl',
+            'heroTitle', 'heroSubtitle', 'heroCtaText', 'heroImages', 'aboutHeadline', 'aboutBio',
+            'aboutPhotoUrl', 'aboutExperienceYears', 'specialties', 'differentials', 'themePreset',
+            'themeConfig', 'seoTitle', 'seoDescription', 'ga4Id', 'gtmId', 'gscVerification',
+            'googleAdsId', 'lgpdPrivacyText', 'customDomain', 'status', 'updatedAt'
+          ]))
+        );
       allow delete: if isValidId(tenantId) && isAdmin();
     }
 
@@ -467,19 +484,23 @@ service cloud.firestore {
         incoming().updatedAt == request.time &&
         (isAdmin() || (isTenantOwner(incoming().tenantId) && incoming().ownerUid == request.auth.uid));
       allow update: if isValidId(propertyId) && isVerified() && isValidProperty(incoming()) &&
-        incoming().id == existing().id &&
-        incoming().tenantId == existing().tenantId &&
-        incoming().ownerUid == existing().ownerUid &&
-        incoming().createdAt == existing().createdAt &&
-        incoming().updatedAt == request.time &&
-        (isAdmin() || (isOwner(existing().ownerUid) && incoming().diff(existing()).affectedKeys().hasOnly([
-          'slug', 'code', 'title', 'propertyType', 'transactionType',
-          'price', 'condoFee', 'iptu', 'city', 'neighborhood', 'address', 'showExactAddress',
-          'builtArea', 'totalArea', 'bedrooms', 'suites', 'bathrooms', 'parkingSpaces',
-          'description', 'summary', 'features', 'differentials', 'coverImage', 'images',
-          'videos', 'panorama360Images', 'virtualTourType', 'status', 'featured', 'sortOrder',
-          'seoTitle', 'seoDescription', 'socialCopy', 'whatsappCopy', 'updatedAt'
-        ])));
+        incoming().id == propertyId &&
+        incoming().updatedAt == request.time && (
+          (isAdmin() && preservesValidCreatedAt()) ||
+          (isOwner(existing().ownerUid) &&
+           incoming().id == existing().id &&
+           incoming().tenantId == existing().tenantId &&
+           incoming().ownerUid == existing().ownerUid &&
+           incoming().createdAt == existing().createdAt &&
+           incoming().diff(existing()).affectedKeys().hasOnly([
+            'slug', 'code', 'title', 'propertyType', 'transactionType',
+            'price', 'condoFee', 'iptu', 'city', 'neighborhood', 'address', 'showExactAddress',
+            'builtArea', 'totalArea', 'bedrooms', 'suites', 'bathrooms', 'parkingSpaces',
+            'description', 'summary', 'features', 'differentials', 'coverImage', 'images',
+            'videos', 'panorama360Images', 'virtualTourType', 'status', 'featured', 'sortOrder',
+            'seoTitle', 'seoDescription', 'socialCopy', 'whatsappCopy', 'updatedAt'
+          ]))
+        );
       allow delete: if isValidId(propertyId) && (isAdmin() || (resource != null && isOwner(existing().ownerUid)));
     }
 
@@ -495,16 +516,20 @@ service cloud.firestore {
         incoming().updatedAt == request.time &&
         (isAdmin() || (isTenantOwner(incoming().tenantId) && incoming().ownerUid == request.auth.uid));
       allow update: if isValidId(developmentId) && isVerified() && isValidDevelopment(incoming()) &&
-        incoming().id == existing().id &&
-        incoming().tenantId == existing().tenantId &&
-        incoming().ownerUid == existing().ownerUid &&
-        incoming().createdAt == existing().createdAt &&
-        incoming().updatedAt == request.time &&
-        (isAdmin() || (isOwner(existing().ownerUid) && incoming().diff(existing()).affectedKeys().hasOnly([
-          'slug', 'name', 'developer', 'category', 'city', 'neighborhood', 'deliveryDate',
-          'priceFrom', 'description', 'technicalSpecs', 'coverImage', 'images', 'floorPlans',
-          'videos', 'status', 'featured', 'seoTitle', 'seoDescription', 'updatedAt'
-        ])));
+        incoming().id == developmentId &&
+        incoming().updatedAt == request.time && (
+          (isAdmin() && preservesValidCreatedAt()) ||
+          (isOwner(existing().ownerUid) &&
+           incoming().id == existing().id &&
+           incoming().tenantId == existing().tenantId &&
+           incoming().ownerUid == existing().ownerUid &&
+           incoming().createdAt == existing().createdAt &&
+           incoming().diff(existing()).affectedKeys().hasOnly([
+            'slug', 'name', 'developer', 'category', 'city', 'neighborhood', 'deliveryDate',
+            'priceFrom', 'description', 'technicalSpecs', 'coverImage', 'images', 'floorPlans',
+            'videos', 'status', 'featured', 'seoTitle', 'seoDescription', 'updatedAt'
+          ]))
+        );
       allow delete: if isValidId(developmentId) && (isAdmin() || (resource != null && isOwner(existing().ownerUid)));
     }
 
@@ -520,15 +545,19 @@ service cloud.firestore {
         incoming().updatedAt == request.time &&
         (isAdmin() || (isTenantOwner(incoming().tenantId) && incoming().ownerUid == request.auth.uid));
       allow update: if isValidId(landingPageId) && isVerified() && isValidLandingPage(incoming()) &&
-        incoming().id == existing().id &&
-        incoming().tenantId == existing().tenantId &&
-        incoming().ownerUid == existing().ownerUid &&
-        incoming().createdAt == existing().createdAt &&
-        incoming().updatedAt == request.time &&
-        (isAdmin() || (isOwner(existing().ownerUid) && incoming().diff(existing()).affectedKeys().hasOnly([
-          'propertyId', 'slug', 'template', 'title', 'subtitle', 'heroImage', 'description',
-          'ctaText', 'accentColor', 'highlights', 'status', 'seoTitle', 'seoDescription', 'updatedAt'
-        ])));
+        incoming().id == landingPageId &&
+        incoming().updatedAt == request.time && (
+          (isAdmin() && preservesValidCreatedAt()) ||
+          (isOwner(existing().ownerUid) &&
+           incoming().id == existing().id &&
+           incoming().tenantId == existing().tenantId &&
+           incoming().ownerUid == existing().ownerUid &&
+           incoming().createdAt == existing().createdAt &&
+           incoming().diff(existing()).affectedKeys().hasOnly([
+            'propertyId', 'slug', 'template', 'title', 'subtitle', 'heroImage', 'description',
+            'ctaText', 'accentColor', 'highlights', 'status', 'seoTitle', 'seoDescription', 'updatedAt'
+          ]))
+        );
       allow delete: if isValidId(landingPageId) && (isAdmin() || (resource != null && isOwner(existing().ownerUid)));
     }
 
@@ -545,14 +574,18 @@ service cloud.firestore {
         exists(/databases/$(database)/documents/tenants/$(incoming().tenantId)) &&
         incoming().ownerUid == get(/databases/$(database)/documents/tenants/$(incoming().tenantId)).data.ownerUid;
       allow update: if isValidId(leadId) && isVerified() && isValidLead(incoming()) &&
-        incoming().id == existing().id &&
-        incoming().tenantId == existing().tenantId &&
-        incoming().ownerUid == existing().ownerUid &&
-        incoming().createdAt == existing().createdAt &&
-        incoming().updatedAt == request.time &&
-        (isAdmin() || (isOwner(existing().ownerUid) && incoming().diff(existing()).affectedKeys().hasOnly([
-          'status', 'notes', 'updatedAt'
-        ])));
+        incoming().id == leadId &&
+        incoming().updatedAt == request.time && (
+          (isAdmin() && preservesValidCreatedAt()) ||
+          (isOwner(existing().ownerUid) &&
+           incoming().id == existing().id &&
+           incoming().tenantId == existing().tenantId &&
+           incoming().ownerUid == existing().ownerUid &&
+           incoming().createdAt == existing().createdAt &&
+           incoming().diff(existing()).affectedKeys().hasOnly([
+            'status', 'notes', 'updatedAt'
+          ]))
+        );
       allow delete: if isValidId(leadId) && (isAdmin() || (resource != null && isOwner(existing().ownerUid)));
     }
 
@@ -568,14 +601,18 @@ service cloud.firestore {
         incoming().updatedAt == request.time &&
         (isAdmin() || (isTenantOwner(incoming().tenantId) && incoming().ownerUid == request.auth.uid));
       allow update: if isValidId(testimonialId) && isVerified() && isValidTestimonial(incoming()) &&
-        incoming().id == existing().id &&
-        incoming().tenantId == existing().tenantId &&
-        incoming().ownerUid == existing().ownerUid &&
-        incoming().createdAt == existing().createdAt &&
-        incoming().updatedAt == request.time &&
-        (isAdmin() || (isOwner(existing().ownerUid) && incoming().diff(existing()).affectedKeys().hasOnly([
-          'clientName', 'clientRole', 'quote', 'propertyReference', 'status', 'updatedAt'
-        ])));
+        incoming().id == testimonialId &&
+        incoming().updatedAt == request.time && (
+          (isAdmin() && preservesValidCreatedAt()) ||
+          (isOwner(existing().ownerUid) &&
+           incoming().id == existing().id &&
+           incoming().tenantId == existing().tenantId &&
+           incoming().ownerUid == existing().ownerUid &&
+           incoming().createdAt == existing().createdAt &&
+           incoming().diff(existing()).affectedKeys().hasOnly([
+            'clientName', 'clientRole', 'quote', 'propertyReference', 'status', 'updatedAt'
+          ]))
+        );
       allow delete: if isValidId(testimonialId) && (isAdmin() || (resource != null && isOwner(existing().ownerUid)));
     }
 
@@ -601,14 +638,18 @@ service cloud.firestore {
         incoming().updatedAt == request.time &&
         (isAdmin() || (isTenantOwner(incoming().tenantId) && incoming().ownerUid == request.auth.uid));
       allow update: if isValidId(campaignId) && isVerified() && isValidCampaign(incoming()) &&
-        incoming().id == existing().id &&
-        incoming().tenantId == existing().tenantId &&
-        incoming().ownerUid == existing().ownerUid &&
-        incoming().createdAt == existing().createdAt &&
-        incoming().updatedAt == request.time &&
-        (isAdmin() || (isOwner(existing().ownerUid) && incoming().diff(existing()).affectedKeys().hasOnly([
-          'name', 'channel', 'utmSource', 'utmMedium', 'utmCampaign', 'status', 'budget', 'updatedAt'
-        ])));
+        incoming().id == campaignId &&
+        incoming().updatedAt == request.time && (
+          (isAdmin() && preservesValidCreatedAt()) ||
+          (isOwner(existing().ownerUid) &&
+           incoming().id == existing().id &&
+           incoming().tenantId == existing().tenantId &&
+           incoming().ownerUid == existing().ownerUid &&
+           incoming().createdAt == existing().createdAt &&
+           incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'channel', 'utmSource', 'utmMedium', 'utmCampaign', 'status', 'budget', 'updatedAt'
+          ]))
+        );
       allow delete: if isValidId(campaignId) && (isAdmin() || (resource != null && isOwner(existing().ownerUid)));
     }
 
@@ -623,13 +664,17 @@ service cloud.firestore {
         incoming().createdAt == request.time &&
         (isAdmin() || (isTenantOwner(incoming().tenantId) && incoming().ownerUid == request.auth.uid));
       allow update: if isValidId(mediaId) && isVerified() && isValidMediaAsset(incoming()) &&
-        incoming().id == existing().id &&
-        incoming().tenantId == existing().tenantId &&
-        incoming().ownerUid == existing().ownerUid &&
-        incoming().createdAt == existing().createdAt &&
-        (isAdmin() || (isOwner(existing().ownerUid) && incoming().diff(existing()).affectedKeys().hasOnly([
-          'propertyId', 'roomTag', 'isPrimary', 'isAiEnhanced', 'originalUrl', 'isPublic', 'sortOrder'
-        ])));
+        incoming().id == mediaId && (
+          (isAdmin() && preservesValidCreatedAt()) ||
+          (isOwner(existing().ownerUid) &&
+           incoming().id == existing().id &&
+           incoming().tenantId == existing().tenantId &&
+           incoming().ownerUid == existing().ownerUid &&
+           incoming().createdAt == existing().createdAt &&
+           incoming().diff(existing()).affectedKeys().hasOnly([
+            'propertyId', 'roomTag', 'isPrimary', 'isAiEnhanced', 'originalUrl', 'isPublic', 'sortOrder'
+          ]))
+        );
       allow delete: if isValidId(mediaId) && (isAdmin() || (resource != null && isOwner(existing().ownerUid)));
     }
 
@@ -643,14 +688,18 @@ service cloud.firestore {
         incoming().updatedAt == request.time &&
         (isAdmin() || (isTenantOwner(incoming().tenantId) && incoming().ownerUid == request.auth.uid));
       allow update: if isValidId(jobId) && isVerified() && isValidAiJob(incoming()) &&
-        incoming().id == existing().id &&
-        incoming().tenantId == existing().tenantId &&
-        incoming().ownerUid == existing().ownerUid &&
-        incoming().createdAt == existing().createdAt &&
-        incoming().updatedAt == request.time &&
-        (isAdmin() || (isOwner(existing().ownerUid) && incoming().diff(existing()).affectedKeys().hasOnly([
-          'status', 'outputUrl', 'errorMessage', 'updatedAt'
-        ])));
+        incoming().id == jobId &&
+        incoming().updatedAt == request.time && (
+          (isAdmin() && preservesValidCreatedAt()) ||
+          (isOwner(existing().ownerUid) &&
+           incoming().id == existing().id &&
+           incoming().tenantId == existing().tenantId &&
+           incoming().ownerUid == existing().ownerUid &&
+           incoming().createdAt == existing().createdAt &&
+           incoming().diff(existing()).affectedKeys().hasOnly([
+            'status', 'outputUrl', 'errorMessage', 'updatedAt'
+          ]))
+        );
       allow delete: if isValidId(jobId) && (isAdmin() || (resource != null && isOwner(existing().ownerUid)));
     }
 

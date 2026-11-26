@@ -8,6 +8,7 @@ import {
   query,
   serverTimestamp,
   setDoc,
+  Timestamp,
   where,
   Unsubscribe,
 } from 'firebase/firestore';
@@ -101,6 +102,25 @@ function clampMapArray(val: unknown, maxItems: number): Record<string, unknown>[
     .filter((item): item is Record<string, unknown> => isPlainObject(item))
     .slice(0, maxItems)
     .map((item) => deepCleanUndefined(item));
+}
+
+function isValidFirestoreTimestamp(val: unknown): val is Timestamp {
+  return (
+    val instanceof Timestamp ||
+    (typeof val === 'object' &&
+      val !== null &&
+      'seconds' in val &&
+      'nanoseconds' in val &&
+      typeof (val as { toDate?: unknown }).toDate === 'function')
+  );
+}
+
+function isValidDocId(val: unknown): val is string {
+  return typeof val === 'string' && val.length >= 1 && val.length <= 128 && /^[a-zA-Z0-9_-]+$/.test(val);
+}
+
+function isValidSlugStr(val: unknown): val is string {
+  return typeof val === 'string' && val.length >= 1 && val.length <= 160 && /^[a-z0-9-]+$/.test(val);
 }
 
 function reportListenerError(
@@ -296,7 +316,9 @@ export async function bootstrapUserAndTenant(user: User): Promise<{
         };
         await setDoc(userRef, {
           ...cleanUndefined(sanitizedProfile as unknown as Record<string, unknown>),
-          createdAt: existingProfile.createdAt ?? serverTimestamp(),
+          createdAt: isValidFirestoreTimestamp(existingProfile.createdAt)
+            ? existingProfile.createdAt
+            : serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
         profile = sanitizedProfile;
@@ -342,26 +364,36 @@ export async function bootstrapUserAndTenant(user: User): Promise<{
       const rawExisting = tenantSnap.data() as Partial<Tenant> & { createdAt?: unknown };
       tenant = hydrateTenantDocument(rawExisting, profile.tenantId);
 
-      // Auto-heal broken legacy placeholder URLs or missing theme config once on admin login without overwriting valid edits
+      // Auto-heal broken legacy placeholder URLs, missing theme config, or legacy invalid id/ownerUid/createdAt
       const hasLegacyBrokenUrl =
-        typeof rawExisting.logoUrl === 'string' && rawExisting.logoUrl.includes('wxmntYHq') ||
-        typeof rawExisting.faviconUrl === 'string' && rawExisting.faviconUrl.includes('wxmntYHq');
-      const missingCoreStructure = !rawExisting.themeConfig || !rawExisting.themePreset;
+        (typeof rawExisting.logoUrl === 'string' && rawExisting.logoUrl.includes('wxmntYHq')) ||
+        (typeof rawExisting.faviconUrl === 'string' && rawExisting.faviconUrl.includes('wxmntYHq'));
+      const missingCoreStructure =
+        !rawExisting.themeConfig ||
+        !rawExisting.themePreset ||
+        !isValidDocId(rawExisting.id) ||
+        rawExisting.id !== profile.tenantId ||
+        !isValidDocId(rawExisting.ownerUid) ||
+        !isValidFirestoreTimestamp(rawExisting.createdAt) ||
+        !isValidSlugStr(rawExisting.slug);
 
-      if (isBootAdmin && (hasLegacyBrokenUrl || missingCoreStructure) && rawExisting.createdAt) {
+      if (isBootAdmin && (hasLegacyBrokenUrl || missingCoreStructure)) {
         const sanitizedFields = buildSanitizedTenantFields(tenant, DEFAULT_TENANT);
-        const preservedSlug =
-          typeof rawExisting.slug === 'string' && /^[a-z0-9-]+$/.test(rawExisting.slug)
-            ? rawExisting.slug
-            : clampSlug(rawExisting.slug || profile.tenantId, DEFAULT_TENANT.slug);
+        const preservedSlug = isValidSlugStr(rawExisting.slug)
+          ? rawExisting.slug
+          : clampSlug(rawExisting.slug || profile.tenantId, DEFAULT_TENANT.slug);
+        const healedOwnerUid = isValidDocId(rawExisting.ownerUid) ? rawExisting.ownerUid : user.uid;
         await setDoc(tenantRef, {
-          id: rawExisting.id || profile.tenantId,
-          ownerUid: rawExisting.ownerUid || user.uid,
+          id: profile.tenantId,
+          ownerUid: healedOwnerUid,
           slug: preservedSlug,
           ...sanitizedFields,
-          createdAt: rawExisting.createdAt,
+          createdAt: isValidFirestoreTimestamp(rawExisting.createdAt)
+            ? rawExisting.createdAt
+            : serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
+        tenant = { ...tenant, id: profile.tenantId, ownerUid: healedOwnerUid, slug: preservedSlug };
       }
     }
 
@@ -490,18 +522,23 @@ export async function updateTenantSettings(tenantId: string, updates: Partial<Te
       tenantId === DEFAULT_TENANT_ID ? DEFAULT_TENANT : existing
     );
 
-    const preservedSlug =
-      typeof existing.slug === 'string' && /^[a-z0-9-]+$/.test(existing.slug)
-        ? existing.slug
-        : clampSlug(existing.slug || tenantId, DEFAULT_TENANT.slug);
+    const preservedSlug = isValidSlugStr(existing.slug)
+      ? existing.slug
+      : clampSlug(existing.slug || tenantId, DEFAULT_TENANT.slug);
+
+    const safeOwnerUid = isValidDocId(existing.ownerUid)
+      ? existing.ownerUid
+      : auth.currentUser?.uid || '';
 
     // Preserve immutable fields and rewrite cleanly so legacy stray keys never fail hasOnly
     await setDoc(tenantRef, {
-      id: existing.id || tenantId,
-      ownerUid: existing.ownerUid || auth.currentUser?.uid || '',
+      id: tenantId,
+      ownerUid: safeOwnerUid,
       slug: preservedSlug,
       ...mergedFields,
-      createdAt: existing.createdAt ?? serverTimestamp(),
+      createdAt: isValidFirestoreTimestamp(existing.createdAt)
+        ? existing.createdAt
+        : serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
   } catch (err) {
@@ -635,12 +672,14 @@ export async function saveProperty(
 
     const existing = snap.data() as Property & { createdAt?: unknown };
     await setDoc(ref, {
-      id: existing.id || property.id,
-      tenantId: existing.tenantId || property.tenantId,
-      ownerUid: existing.ownerUid || property.ownerUid || auth.currentUser?.uid || '',
+      id: property.id,
+      tenantId: isValidDocId(existing.tenantId) ? existing.tenantId : property.tenantId,
+      ownerUid: isValidDocId(existing.ownerUid)
+        ? existing.ownerUid
+        : (isValidDocId(property.ownerUid) ? property.ownerUid : (auth.currentUser?.uid || '')),
       ...mutableFields,
       viewsCount: clampNumber(existing.viewsCount ?? property.viewsCount, 0),
-      createdAt: existing.createdAt ?? serverTimestamp(),
+      createdAt: isValidFirestoreTimestamp(existing.createdAt) ? existing.createdAt : serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
   } catch (err) {
@@ -751,11 +790,13 @@ export async function saveDevelopment(
 
     const existing = snap.data() as Development & { createdAt?: unknown };
     await setDoc(ref, {
-      id: existing.id || dev.id,
-      tenantId: existing.tenantId || dev.tenantId,
-      ownerUid: existing.ownerUid || dev.ownerUid || auth.currentUser?.uid || '',
+      id: dev.id,
+      tenantId: isValidDocId(existing.tenantId) ? existing.tenantId : dev.tenantId,
+      ownerUid: isValidDocId(existing.ownerUid)
+        ? existing.ownerUid
+        : (isValidDocId(dev.ownerUid) ? dev.ownerUid : (auth.currentUser?.uid || '')),
       ...mutableFields,
-      createdAt: existing.createdAt ?? serverTimestamp(),
+      createdAt: isValidFirestoreTimestamp(existing.createdAt) ? existing.createdAt : serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
   } catch (err) {
@@ -865,13 +906,15 @@ export async function saveLandingPage(
 
     const existing = snap.data() as LandingPage & { createdAt?: unknown };
     await setDoc(ref, {
-      id: existing.id || lp.id,
-      tenantId: existing.tenantId || lp.tenantId,
-      ownerUid: existing.ownerUid || lp.ownerUid || auth.currentUser?.uid || '',
+      id: lp.id,
+      tenantId: isValidDocId(existing.tenantId) ? existing.tenantId : lp.tenantId,
+      ownerUid: isValidDocId(existing.ownerUid)
+        ? existing.ownerUid
+        : (isValidDocId(lp.ownerUid) ? lp.ownerUid : (auth.currentUser?.uid || '')),
       ...mutableFields,
       viewsCount: clampNumber(existing.viewsCount ?? lp.viewsCount, 0),
       leadsCount: clampNumber(existing.leadsCount ?? lp.leadsCount, 0),
-      createdAt: existing.createdAt ?? serverTimestamp(),
+      createdAt: isValidFirestoreTimestamp(existing.createdAt) ? existing.createdAt : serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
   } catch (err) {
@@ -967,11 +1010,13 @@ export async function saveTestimonial(
 
     const existing = snap.data() as Testimonial & { createdAt?: unknown };
     await setDoc(ref, {
-      id: existing.id || item.id,
-      tenantId: existing.tenantId || item.tenantId,
-      ownerUid: existing.ownerUid || item.ownerUid || auth.currentUser?.uid || '',
+      id: item.id,
+      tenantId: isValidDocId(existing.tenantId) ? existing.tenantId : item.tenantId,
+      ownerUid: isValidDocId(existing.ownerUid)
+        ? existing.ownerUid
+        : (isValidDocId(item.ownerUid) ? item.ownerUid : (auth.currentUser?.uid || '')),
       ...mutableFields,
-      createdAt: existing.createdAt ?? serverTimestamp(),
+      createdAt: isValidFirestoreTimestamp(existing.createdAt) ? existing.createdAt : serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
   } catch (err) {
@@ -1062,9 +1107,9 @@ export async function updateLeadStatus(leadId: string, status: Lead['status'], n
 
     await setDoc(ref, {
       ...cleanUndefined({
-        id: existing.id || leadId,
+        id: leadId,
         tenantId: existing.tenantId,
-        ownerUid: existing.ownerUid,
+        ownerUid: isValidDocId(existing.ownerUid) ? existing.ownerUid : (auth.currentUser?.uid || ''),
         name: clampReqStr(existing.name, 120, 'Interessado'),
         phone: clampReqStr(existing.phone, 40, 'Não informado'),
         email: clampStr(existing.email, 200),
@@ -1082,7 +1127,7 @@ export async function updateLeadStatus(leadId: string, status: Lead['status'], n
         status: validStatuses.includes(status) ? status : existing.status || 'new',
         notes: clampStr(notes, 2000),
       }),
-      createdAt: existing.createdAt ?? serverTimestamp(),
+      createdAt: isValidFirestoreTimestamp(existing.createdAt) ? existing.createdAt : serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
   } catch (err) {
@@ -1208,11 +1253,13 @@ export async function saveCampaign(c: Omit<Campaign, 'createdAt' | 'updatedAt'>,
 
     const existing = snap.data() as Campaign & { createdAt?: unknown };
     await setDoc(ref, {
-      id: existing.id || c.id,
-      tenantId: existing.tenantId || c.tenantId,
-      ownerUid: existing.ownerUid || c.ownerUid || auth.currentUser?.uid || '',
+      id: c.id,
+      tenantId: isValidDocId(existing.tenantId) ? existing.tenantId : c.tenantId,
+      ownerUid: isValidDocId(existing.ownerUid)
+        ? existing.ownerUid
+        : (isValidDocId(c.ownerUid) ? c.ownerUid : (auth.currentUser?.uid || '')),
       ...mutableFields,
-      createdAt: existing.createdAt ?? serverTimestamp(),
+      createdAt: isValidFirestoreTimestamp(existing.createdAt) ? existing.createdAt : serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
   } catch (err) {
