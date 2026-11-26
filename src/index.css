@@ -18,6 +18,8 @@
   --site-radius: 0.5rem;
   --site-font-display: "Cormorant Garamond", Georgia, serif;
   --site-font-body: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+  --ease-editorial: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-swift: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 html {
@@ -31,6 +33,12 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overflow-x: hidden;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background-color: color-mix(in srgb, var(--site-accent) 24%, transparent);
+  color: var(--site-text);
 }
 
 .font-editorial {
@@ -45,6 +53,67 @@ body {
   text-wrap: balance;
 }
 
+/* Architectural subtle paper grain overlay (compositor-lightweight) */
+.editorial-grain {
+  background-image: radial-gradient(rgba(20, 20, 19, 0.045) 0.75px, transparent 0.75px);
+  background-size: 20px 20px;
+}
+
+/* Editorial hairline animated underline */
+.editorial-link {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.editorial-link::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: -2px;
+  width: 100%;
+  height: 1px;
+  background-color: var(--site-accent);
+  transform: scaleX(0);
+  transform-origin: right center;
+  transition: transform 0.42s var(--ease-editorial);
+}
+
+.editorial-link:hover::after,
+.editorial-link:focus-visible::after {
+  transform: scaleX(1);
+  transform-origin: left center;
+}
+
+/* Masked editorial image frame */
+.editorial-frame {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+/* Subtle horizontal marquee / scroll cue */
+@keyframes scroll-cue-line {
+  0% {
+    transform: translateY(-100%);
+    opacity: 0;
+  }
+  30% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(110%);
+    opacity: 0;
+  }
+}
+
+.animate-scroll-cue {
+  animation: scroll-cue-line 2.4s var(--ease-editorial) infinite;
+}
+
 /* Custom scrollbar refinement */
 ::-webkit-scrollbar {
   width: 8px;
@@ -56,8 +125,21 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(120, 113, 108, 0.35);
+  background: rgba(120, 113, 108, 0.32);
   border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(120, 113, 108, 0.52);
+}
+
+/* Hide horizontal scrollbar on custom editorial rails while keeping scrollability */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }
 
 @keyframes tour-kenburns {
@@ -98,4 +180,3 @@ body {
     scroll-behavior: auto !important;
   }
 }
-

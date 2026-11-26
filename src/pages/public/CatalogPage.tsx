@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { SlidersHorizontal, X } from 'lucide-react';
+import { ChevronDown, ChevronUp, SlidersHorizontal, X } from 'lucide-react';
 import { useAppContext } from '../../hooks/useAuthTenant';
 import { subscribePublishedProperties, trackPublicEvent } from '../../firebase/firestoreService';
 import { Property } from '../../types/realestate';
 import { PropertyCard } from '../../components/properties/PropertyCard';
+import { EditorialReveal } from '../../components/motion/EditorialMotion';
 import { applySeoMetadata } from '../../utils/seo';
 
 interface CatalogPageProps {
@@ -15,6 +16,7 @@ export function CatalogPage({ search, onNavigate }: CatalogPageProps) {
   const { tenant } = useAppContext();
   const [properties, setProperties] = useState<Property[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const initialParams = useMemo(() => new URLSearchParams(search), [search]);
   const [tx, setTx] = useState(() => initialParams.get('tx') || '');
@@ -30,6 +32,16 @@ export function CatalogPage({ search, onNavigate }: CatalogPageProps) {
   const [minArea, setMinArea] = useState('');
   const [maxCondo, setMaxCondo] = useState('');
   const [sortBy, setSortBy] = useState<'order' | 'price_asc' | 'price_desc' | 'area_desc'>('order');
+
+  // Sync URL query params if user navigates from region rail or quick search
+  useEffect(() => {
+    const params = new URLSearchParams(search);
+    setTx(params.get('tx') || '');
+    setType(params.get('type') || '');
+    setCity(params.get('city') || '');
+    setNeighborhood(params.get('neighborhood') || '');
+    setKeyword(params.get('q') || '');
+  }, [search]);
 
   useEffect(() => {
     applySeoMetadata({
@@ -65,6 +77,36 @@ export function CatalogPage({ search, onNavigate }: CatalogPageProps) {
     [properties]
   );
 
+  const activeFilterCount = useMemo(() => {
+    return [
+      tx,
+      type,
+      city,
+      neighborhood,
+      keyword.trim(),
+      minPrice,
+      maxPrice,
+      minBedrooms,
+      minSuites,
+      minParking,
+      minArea,
+      maxCondo,
+    ].filter(Boolean).length;
+  }, [
+    tx,
+    type,
+    city,
+    neighborhood,
+    keyword,
+    minPrice,
+    maxPrice,
+    minBedrooms,
+    minSuites,
+    minParking,
+    minArea,
+    maxCondo,
+  ]);
+
   const filtered = useMemo(() => {
     const kw = keyword.trim().toLowerCase();
     const list = properties.filter((p) => {
@@ -80,7 +122,7 @@ export function CatalogPage({ search, onNavigate }: CatalogPageProps) {
       if (minArea && p.builtArea < Number(minArea)) return false;
       if (maxCondo && p.condoFee > Number(maxCondo)) return false;
       if (kw) {
-        const hay = `${p.title} ${p.neighborhood} ${p.city} ${p.code} ${p.description}`.toLowerCase();
+        const hay = `${p.title} ${p.neighborhood} ${p.city} ${p.address} ${p.code} ${p.description}`.toLowerCase();
         if (!hay.includes(kw)) return false;
       }
       return true;
@@ -124,208 +166,246 @@ export function CatalogPage({ search, onNavigate }: CatalogPageProps) {
   };
 
   return (
-    <div className="max-w-7xl mx-auto px-6 py-14 space-y-10">
-      <div className="space-y-2 border-b border-[var(--site-border)] pb-8">
-        <p className="text-xs font-medium text-[var(--site-accent)]">Acervo Completo</p>
-        <h1 className="font-editorial text-4xl sm:text-5xl font-semibold">Imóveis Selecionados</h1>
-        <p className="text-sm text-[var(--site-text-muted)]">
-          Busca em tempo real conectada diretamente ao banco de dados do corretor.
+    <div className="max-w-7xl mx-auto px-6 py-16 space-y-10">
+      <EditorialReveal className="space-y-3 border-b border-[var(--site-border)] pb-10">
+        <p className="text-[11px] font-mono uppercase tracking-[0.18em] text-[var(--site-accent)]">
+          Acervo Completo · {tenant.city}
         </p>
-      </div>
+        <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
+          <h1 className="font-editorial text-4xl sm:text-5xl lg:text-6xl font-semibold tracking-tight">
+            Imóveis Selecionados
+          </h1>
+          <p className="text-sm text-[var(--site-text-muted)] max-w-md leading-relaxed">
+            Busca em tempo real conectada diretamente ao acervo oficial da consultoria.
+          </p>
+        </div>
+      </EditorialReveal>
 
       {/* Real Firestore Multi-Criteria Filter Panel */}
-      <section className="p-6 bg-[var(--site-surface)] border border-[var(--site-border)] rounded-[var(--site-radius)] space-y-5">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2 text-sm font-semibold">
-            <SlidersHorizontal className="w-4 h-4 text-[var(--site-accent)]" />
-            <span>Filtros de Pesquisa</span>
+      <EditorialReveal delay={0.05}>
+        <section className="p-6 sm:p-7 bg-[var(--site-surface)] border border-[var(--site-border)] rounded-[var(--site-radius)] shadow-[0_16px_40px_-28px_rgba(20,20,19,0.16)] space-y-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5 text-sm font-semibold">
+              <SlidersHorizontal className="w-4 h-4 text-[var(--site-accent)]" />
+              <span>Filtros de Pesquisa</span>
+              {activeFilterCount > 0 && (
+                <span className="font-mono text-xs text-[var(--site-accent)] tabular-nums">
+                  · {activeFilterCount} {activeFilterCount === 1 ? 'ativo' : 'ativos'}
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-4">
+              <button
+                type="button"
+                onClick={() => setShowAdvanced((prev) => !prev)}
+                className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--site-text)] hover:text-[var(--site-accent)] transition-colors cursor-pointer"
+              >
+                <span>{showAdvanced ? 'Ocultar critérios avançados' : 'Critérios avançados'}</span>
+                {showAdvanced ? (
+                  <ChevronUp className="w-3.5 h-3.5" />
+                ) : (
+                  <ChevronDown className="w-3.5 h-3.5" />
+                )}
+              </button>
+
+              {activeFilterCount > 0 && (
+                <button
+                  type="button"
+                  onClick={resetFilters}
+                  className="inline-flex items-center gap-1 text-xs text-[var(--site-text-muted)] hover:text-[var(--site-text)] cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                  Limpar
+                </button>
+              )}
+            </div>
           </div>
-          <button
-            type="button"
-            onClick={resetFilters}
-            className="inline-flex items-center gap-1 text-xs text-[var(--site-text-muted)] hover:text-[var(--site-text)]"
-          >
-            <X className="w-3.5 h-3.5" />
-            Limpar filtros
-          </button>
-        </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          <label className="block space-y-1 text-xs text-[var(--site-text-muted)]">
-            <span>Palavra-chave / Código</span>
-            <input
-              type="text"
-              value={keyword}
-              onChange={(e) => setKeyword(e.target.value)}
-              placeholder="Bairro, título ou código"
-              className="w-full px-3 py-2 text-sm bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)]"
-            />
-          </label>
+          {/* Primary Search Row */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <label className="block space-y-1.5 text-[11px] font-mono uppercase tracking-[0.09em] text-[var(--site-text-muted)]">
+              <span>Palavra-chave / Código</span>
+              <input
+                type="text"
+                value={keyword}
+                onChange={(e) => setKeyword(e.target.value)}
+                placeholder="Bairro, título ou código"
+                className="w-full px-3.5 py-2.5 text-sm font-sans normal-case tracking-normal bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)] focus:outline-none focus:border-[var(--site-accent)] transition-colors"
+              />
+            </label>
 
-          <label className="block space-y-1 text-xs text-[var(--site-text-muted)]">
-            <span>Negociação</span>
-            <select
-              value={tx}
-              onChange={(e) => setTx(e.target.value)}
-              className="w-full px-3 py-2 text-sm bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)]"
-            >
-              <option value="">Todas</option>
-              <option value="venda">Venda</option>
-              <option value="aluguel">Aluguel</option>
-              <option value="lancamento">Lançamento</option>
-            </select>
-          </label>
+            <label className="block space-y-1.5 text-[11px] font-mono uppercase tracking-[0.09em] text-[var(--site-text-muted)]">
+              <span>Negociação</span>
+              <select
+                value={tx}
+                onChange={(e) => setTx(e.target.value)}
+                className="w-full px-3.5 py-2.5 text-sm font-sans normal-case tracking-normal bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)] focus:outline-none focus:border-[var(--site-accent)] transition-colors"
+              >
+                <option value="">Todas</option>
+                <option value="venda">Venda</option>
+                <option value="aluguel">Aluguel</option>
+                <option value="lancamento">Lançamento</option>
+              </select>
+            </label>
 
-          <label className="block space-y-1 text-xs text-[var(--site-text-muted)]">
-            <span>Tipo</span>
-            <select
-              value={type}
-              onChange={(e) => setType(e.target.value)}
-              className="w-full px-3 py-2 text-sm bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)]"
-            >
-              <option value="">Todos</option>
-              <option value="apartamento">Apartamento</option>
-              <option value="cobertura">Cobertura</option>
-              <option value="casa">Casa</option>
-              <option value="terreno">Terreno</option>
-              <option value="comercial">Comercial</option>
-            </select>
-          </label>
+            <label className="block space-y-1.5 text-[11px] font-mono uppercase tracking-[0.09em] text-[var(--site-text-muted)]">
+              <span>Tipologia</span>
+              <select
+                value={type}
+                onChange={(e) => setType(e.target.value)}
+                className="w-full px-3.5 py-2.5 text-sm font-sans normal-case tracking-normal bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)] focus:outline-none focus:border-[var(--site-accent)] transition-colors"
+              >
+                <option value="">Todos</option>
+                <option value="apartamento">Apartamento</option>
+                <option value="cobertura">Cobertura</option>
+                <option value="casa">Casa</option>
+                <option value="terreno">Terreno</option>
+                <option value="comercial">Comercial</option>
+              </select>
+            </label>
 
-          <label className="block space-y-1 text-xs text-[var(--site-text-muted)]">
-            <span>Cidade</span>
-            <select
-              value={city}
-              onChange={(e) => setCity(e.target.value)}
-              className="w-full px-3 py-2 text-sm bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)]"
-            >
-              <option value="">Todas</option>
-              {cities.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
-          </label>
+            <label className="block space-y-1.5 text-[11px] font-mono uppercase tracking-[0.09em] text-[var(--site-text-muted)]">
+              <span>Bairro</span>
+              <select
+                value={neighborhood}
+                onChange={(e) => setNeighborhood(e.target.value)}
+                className="w-full px-3.5 py-2.5 text-sm font-sans normal-case tracking-normal bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)] focus:outline-none focus:border-[var(--site-accent)] transition-colors"
+              >
+                <option value="">Todos</option>
+                {neighborhoods.map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
 
-          <label className="block space-y-1 text-xs text-[var(--site-text-muted)]">
-            <span>Bairro</span>
-            <select
-              value={neighborhood}
-              onChange={(e) => setNeighborhood(e.target.value)}
-              className="w-full px-3 py-2 text-sm bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)]"
-            >
-              <option value="">Todos</option>
-              {neighborhoods.map((n) => (
-                <option key={n} value={n}>
-                  {n}
-                </option>
-              ))}
-            </select>
-          </label>
+          {/* Expandable Advanced Criteria */}
+          {showAdvanced && (
+            <div className="pt-4 border-t border-[var(--site-border)] grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <label className="block space-y-1.5 text-[11px] font-mono uppercase tracking-[0.09em] text-[var(--site-text-muted)]">
+                <span>Cidade</span>
+                <select
+                  value={city}
+                  onChange={(e) => setCity(e.target.value)}
+                  className="w-full px-3.5 py-2.5 text-sm font-sans normal-case tracking-normal bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)] focus:outline-none focus:border-[var(--site-accent)]"
+                >
+                  <option value="">Todas</option>
+                  {cities.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              </label>
 
-          <label className="block space-y-1 text-xs text-[var(--site-text-muted)]">
-            <span>Valor mínimo (R$)</span>
-            <input
-              type="number"
-              min={0}
-              value={minPrice}
-              onChange={(e) => setMinPrice(e.target.value)}
-              placeholder="0"
-              className="w-full px-3 py-2 text-sm bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)]"
-            />
-          </label>
+              <label className="block space-y-1.5 text-[11px] font-mono uppercase tracking-[0.09em] text-[var(--site-text-muted)]">
+                <span>Valor mínimo (R$)</span>
+                <input
+                  type="number"
+                  min={0}
+                  value={minPrice}
+                  onChange={(e) => setMinPrice(e.target.value)}
+                  placeholder="0"
+                  className="w-full px-3.5 py-2.5 text-sm font-sans normal-case tracking-normal bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)] focus:outline-none focus:border-[var(--site-accent)]"
+                />
+              </label>
 
-          <label className="block space-y-1 text-xs text-[var(--site-text-muted)]">
-            <span>Valor máximo (R$)</span>
-            <input
-              type="number"
-              min={0}
-              value={maxPrice}
-              onChange={(e) => setMaxPrice(e.target.value)}
-              placeholder="Sem limite"
-              className="w-full px-3 py-2 text-sm bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)]"
-            />
-          </label>
+              <label className="block space-y-1.5 text-[11px] font-mono uppercase tracking-[0.09em] text-[var(--site-text-muted)]">
+                <span>Valor máximo (R$)</span>
+                <input
+                  type="number"
+                  min={0}
+                  value={maxPrice}
+                  onChange={(e) => setMaxPrice(e.target.value)}
+                  placeholder="Sem limite"
+                  className="w-full px-3.5 py-2.5 text-sm font-sans normal-case tracking-normal bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)] focus:outline-none focus:border-[var(--site-accent)]"
+                />
+              </label>
 
-          <label className="block space-y-1 text-xs text-[var(--site-text-muted)]">
-            <span>Quartos (mín.)</span>
-            <select
-              value={minBedrooms}
-              onChange={(e) => setMinBedrooms(e.target.value)}
-              className="w-full px-3 py-2 text-sm bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)]"
-            >
-              <option value="">Qualquer</option>
-              <option value="1">1+</option>
-              <option value="2">2+</option>
-              <option value="3">3+</option>
-              <option value="4">4+</option>
-            </select>
-          </label>
+              <label className="block space-y-1.5 text-[11px] font-mono uppercase tracking-[0.09em] text-[var(--site-text-muted)]">
+                <span>Quartos (mín.)</span>
+                <select
+                  value={minBedrooms}
+                  onChange={(e) => setMinBedrooms(e.target.value)}
+                  className="w-full px-3.5 py-2.5 text-sm font-sans normal-case tracking-normal bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)] focus:outline-none focus:border-[var(--site-accent)]"
+                >
+                  <option value="">Qualquer</option>
+                  <option value="1">1+</option>
+                  <option value="2">2+</option>
+                  <option value="3">3+</option>
+                  <option value="4">4+</option>
+                </select>
+              </label>
 
-          <label className="block space-y-1 text-xs text-[var(--site-text-muted)]">
-            <span>Suítes (mín.)</span>
-            <select
-              value={minSuites}
-              onChange={(e) => setMinSuites(e.target.value)}
-              className="w-full px-3 py-2 text-sm bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)]"
-            >
-              <option value="">Qualquer</option>
-              <option value="1">1+</option>
-              <option value="2">2+</option>
-              <option value="3">3+</option>
-            </select>
-          </label>
+              <label className="block space-y-1.5 text-[11px] font-mono uppercase tracking-[0.09em] text-[var(--site-text-muted)]">
+                <span>Suítes (mín.)</span>
+                <select
+                  value={minSuites}
+                  onChange={(e) => setMinSuites(e.target.value)}
+                  className="w-full px-3.5 py-2.5 text-sm font-sans normal-case tracking-normal bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)] focus:outline-none focus:border-[var(--site-accent)]"
+                >
+                  <option value="">Qualquer</option>
+                  <option value="1">1+</option>
+                  <option value="2">2+</option>
+                  <option value="3">3+</option>
+                </select>
+              </label>
 
-          <label className="block space-y-1 text-xs text-[var(--site-text-muted)]">
-            <span>Vagas (mín.)</span>
-            <select
-              value={minParking}
-              onChange={(e) => setMinParking(e.target.value)}
-              className="w-full px-3 py-2 text-sm bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)]"
-            >
-              <option value="">Qualquer</option>
-              <option value="1">1+</option>
-              <option value="2">2+</option>
-              <option value="3">3+</option>
-            </select>
-          </label>
+              <label className="block space-y-1.5 text-[11px] font-mono uppercase tracking-[0.09em] text-[var(--site-text-muted)]">
+                <span>Vagas (mín.)</span>
+                <select
+                  value={minParking}
+                  onChange={(e) => setMinParking(e.target.value)}
+                  className="w-full px-3.5 py-2.5 text-sm font-sans normal-case tracking-normal bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)] focus:outline-none focus:border-[var(--site-accent)]"
+                >
+                  <option value="">Qualquer</option>
+                  <option value="1">1+</option>
+                  <option value="2">2+</option>
+                  <option value="3">3+</option>
+                </select>
+              </label>
 
-          <label className="block space-y-1 text-xs text-[var(--site-text-muted)]">
-            <span>Área mín. (m²)</span>
-            <input
-              type="number"
-              min={0}
-              value={minArea}
-              onChange={(e) => setMinArea(e.target.value)}
-              placeholder="Ex.: 120"
-              className="w-full px-3 py-2 text-sm bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)]"
-            />
-          </label>
+              <label className="block space-y-1.5 text-[11px] font-mono uppercase tracking-[0.09em] text-[var(--site-text-muted)]">
+                <span>Área mín. (m²)</span>
+                <input
+                  type="number"
+                  min={0}
+                  value={minArea}
+                  onChange={(e) => setMinArea(e.target.value)}
+                  placeholder="Ex.: 120"
+                  className="w-full px-3.5 py-2.5 text-sm font-sans normal-case tracking-normal bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)] focus:outline-none focus:border-[var(--site-accent)]"
+                />
+              </label>
 
-          <label className="block space-y-1 text-xs text-[var(--site-text-muted)]">
-            <span>Condomínio máx. (R$)</span>
-            <input
-              type="number"
-              min={0}
-              value={maxCondo}
-              onChange={(e) => setMaxCondo(e.target.value)}
-              placeholder="Sem limite"
-              className="w-full px-3 py-2 text-sm bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)]"
-            />
-          </label>
-        </div>
-      </section>
+              <label className="block space-y-1.5 text-[11px] font-mono uppercase tracking-[0.09em] text-[var(--site-text-muted)]">
+                <span>Condomínio máx. (R$)</span>
+                <input
+                  type="number"
+                  min={0}
+                  value={maxCondo}
+                  onChange={(e) => setMaxCondo(e.target.value)}
+                  placeholder="Sem limite"
+                  className="w-full px-3.5 py-2.5 text-sm font-sans normal-case tracking-normal bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)] focus:outline-none focus:border-[var(--site-accent)]"
+                />
+              </label>
+            </div>
+          )}
+        </section>
+      </EditorialReveal>
 
       {/* Results Header */}
       <div className="flex flex-wrap items-center justify-between gap-4 text-sm">
-        <p className="text-[var(--site-text-muted)] tabular-nums">
+        <p className="text-[var(--site-text-muted)] font-mono text-xs uppercase tracking-[0.12em] tabular-nums">
           {filtered.length} {filtered.length === 1 ? 'imóvel encontrado' : 'imóveis encontrados'}
         </p>
         <select
           value={sortBy}
           onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
-          className="px-3 py-2 text-xs bg-[var(--site-surface)] border border-[var(--site-border)] rounded-[var(--site-radius)]"
+          aria-label="Ordenar resultados"
+          className="px-3.5 py-2 text-xs bg-[var(--site-surface)] border border-[var(--site-border)] rounded-[var(--site-radius)] focus:outline-none focus:border-[var(--site-accent)]"
         >
           <option value="order">Ordenação selecionada</option>
           <option value="price_asc">Menor preço</option>
@@ -340,7 +420,7 @@ export function CatalogPage({ search, onNavigate }: CatalogPageProps) {
           {[0, 1, 2].map((i) => (
             <div
               key={i}
-              className="h-96 bg-[var(--site-surface)] border border-[var(--site-border)] rounded-[var(--site-radius)] animate-pulse"
+              className="h-[430px] bg-[var(--site-surface)] border border-[var(--site-border)] rounded-[var(--site-radius)] animate-pulse"
             />
           ))}
         </div>
@@ -355,15 +435,17 @@ export function CatalogPage({ search, onNavigate }: CatalogPageProps) {
           ))}
         </div>
       ) : (
-        <div className="p-12 text-center bg-[var(--site-surface)] border border-[var(--site-border)] rounded-[var(--site-radius)] space-y-4">
-          <h3 className="font-editorial text-2xl font-semibold">Nenhum imóvel corresponde aos filtros</h3>
-          <p className="text-sm text-[var(--site-text-muted)] max-w-md mx-auto">
+        <div className="p-14 text-center bg-[var(--site-surface)] border border-[var(--site-border)] rounded-[var(--site-radius)] space-y-5">
+          <h3 className="font-editorial text-3xl font-semibold">
+            Nenhum imóvel corresponde aos filtros
+          </h3>
+          <p className="text-sm text-[var(--site-text-muted)] max-w-md mx-auto leading-relaxed">
             Tente ampliar os critérios de busca ou fale diretamente com nossa consultoria para acessar imóveis fora de portais.
           </p>
           <button
             type="button"
             onClick={resetFilters}
-            className="px-5 py-2.5 text-xs font-medium bg-[var(--site-text)] text-[var(--site-surface)] rounded-[var(--site-radius)]"
+            className="px-6 py-3 text-xs font-medium bg-[var(--site-text)] text-[var(--site-surface)] rounded-[var(--site-radius)] hover:bg-[var(--site-accent)] hover:text-white transition-colors cursor-pointer"
           >
             Mostrar todos os imóveis
           </button>

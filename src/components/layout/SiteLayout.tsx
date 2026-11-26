@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { Menu, X } from 'lucide-react';
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
+import { ArrowUpRight, Menu, X } from 'lucide-react';
 import { useAppContext } from '../../hooks/useAuthTenant';
 import { buildWhatsAppUrl } from '../../utils/formatters';
 import { trackPublicEvent } from '../../firebase/firestoreService';
 import { FloatingSocialButtons } from './FloatingSocialButtons';
 import { VirtualAssistantWidget } from './VirtualAssistantWidget';
+import { MagneticAction, ScrollProgressLine } from '../motion/EditorialMotion';
 
 interface SiteLayoutProps {
   currentPath: string;
@@ -14,11 +16,25 @@ interface SiteLayoutProps {
 
 export function SiteLayout({ currentPath, onNavigate, children }: SiteLayoutProps) {
   const { tenant } = useAppContext();
+  const prefersReduced = useReducedMotion();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [scrolled, setScrolled] = useState(false);
   const [logoError, setLogoError] = useState(false);
+
   useEffect(() => {
     setLogoError(false);
   }, [tenant.logoUrl]);
+
+  useEffect(() => {
+    const onScroll = () => {
+      const next = window.scrollY > 24;
+      setScrolled((prev) => (prev === next ? prev : next));
+    };
+    onScroll();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
+
   const [lgpdAccepted, setLgpdAccepted] = useState(() => {
     try {
       return localStorage.getItem('lgpd_notice_ack') === '1';
@@ -65,8 +81,18 @@ export function SiteLayout({ currentPath, onNavigate, children }: SiteLayoutProp
   return (
     <div className="min-h-screen flex flex-col bg-[var(--site-bg)] text-[var(--site-text)]">
       {/* Strict 3-Zone Top Bar Contract */}
-      <header className="sticky top-0 z-40 border-b border-[var(--site-border)] bg-[var(--site-bg)]/92 backdrop-blur-md">
-        <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between gap-8">
+      <header
+        className={`sticky top-0 z-40 border-b border-[var(--site-border)] transition-all duration-300 ${
+          scrolled
+            ? 'bg-[var(--site-bg)]/95 backdrop-blur-md shadow-[0_8px_30px_-18px_rgba(20,20,19,0.18)]'
+            : 'bg-[var(--site-bg)]/90 backdrop-blur-sm'
+        }`}
+      >
+        <div
+          className={`max-w-7xl mx-auto px-6 flex items-center justify-between gap-8 transition-[height] duration-300 ${
+            scrolled ? 'h-[72px]' : 'h-20'
+          }`}
+        >
           {/* Zone 1: Transparent Brand Lockup / Wordmark */}
           <a
             href="/"
@@ -83,7 +109,9 @@ export function SiteLayout({ currentPath, onNavigate, children }: SiteLayoutProp
                   alt={tenant.brandName}
                   referrerPolicy="no-referrer"
                   onError={() => setLogoError(true)}
-                  className="h-14 sm:h-[68px] w-auto max-w-[180px] object-contain bg-transparent select-none py-0.5"
+                  className={`w-auto max-w-[180px] object-contain bg-transparent select-none py-0.5 transition-[height] duration-300 ${
+                    scrolled ? 'h-12 sm:h-14' : 'h-14 sm:h-[68px]'
+                  }`}
                 />
                 <span className="sr-only">{tenant.brandName}</span>
               </>
@@ -95,9 +123,15 @@ export function SiteLayout({ currentPath, onNavigate, children }: SiteLayoutProp
           </a>
 
           {/* Zone 2: 4 Clean Single-Line Text Navigation Links */}
-          <nav className="hidden md:flex items-center gap-8 text-sm font-medium text-[var(--site-text-muted)]">
+          <nav
+            aria-label="Navegação principal"
+            className="hidden md:flex items-center gap-9 text-sm font-medium text-[var(--site-text-muted)]"
+          >
             {navItems.map((item) => {
-              const active = currentPath === item.path;
+              const active =
+                item.path === '/'
+                  ? currentPath === '/'
+                  : currentPath === item.path || currentPath.startsWith(`${item.path}/`);
               return (
                 <a
                   key={item.path}
@@ -106,13 +140,18 @@ export function SiteLayout({ currentPath, onNavigate, children }: SiteLayoutProp
                     e.preventDefault();
                     onNavigate(item.path);
                   }}
-                  className={`whitespace-nowrap shrink-0 py-1 border-b transition-colors duration-200 ${
-                    active
-                      ? 'text-[var(--site-text)] border-[var(--site-accent)]'
-                      : 'border-transparent hover:text-[var(--site-text)] hover:border-[var(--site-border)]'
+                  className={`relative whitespace-nowrap shrink-0 py-1.5 transition-colors duration-200 ${
+                    active ? 'text-[var(--site-text)]' : 'hover:text-[var(--site-text)]'
                   }`}
                 >
                   {item.label}
+                  {active && (
+                    <motion.span
+                      layoutId="nav-active-underline"
+                      transition={{ type: 'spring', stiffness: 360, damping: 32 }}
+                      className="absolute left-0 right-0 bottom-0 h-[1.5px] bg-[var(--site-accent)]"
+                    />
+                  )}
                 </a>
               );
             })}
@@ -120,16 +159,20 @@ export function SiteLayout({ currentPath, onNavigate, children }: SiteLayoutProp
 
           {/* Zone 3: 1 Primary CTA Action */}
           <div className="flex items-center gap-3 shrink-0">
+            <MagneticAction className="hidden sm:inline-block">
+              <button
+                type="button"
+                onClick={handlePrimaryCta}
+                className="inline-flex items-center justify-center gap-1.5 px-5 py-2.5 text-xs font-medium tracking-wide bg-[var(--site-text)] text-[var(--site-surface)] rounded-[var(--site-radius)] hover:bg-[var(--site-accent)] hover:text-white transition-colors duration-300 whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <span>Atendimento</span>
+                <ArrowUpRight className="w-3.5 h-3.5" />
+              </button>
+            </MagneticAction>
             <button
               type="button"
-              onClick={handlePrimaryCta}
-              className="hidden sm:inline-flex items-center justify-center px-5 py-2.5 text-xs font-medium tracking-wide bg-[var(--site-text)] text-[var(--site-surface)] rounded-[var(--site-radius)] hover:opacity-90 transition-opacity whitespace-nowrap shrink-0"
-            >
-              Atendimento
-            </button>
-            <button
-              type="button"
-              aria-label="Abrir menu"
+              aria-label={mobileOpen ? 'Fechar menu' : 'Abrir menu'}
+              aria-expanded={mobileOpen}
               onClick={() => setMobileOpen((prev) => !prev)}
               className="md:hidden p-2.5 text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)]"
             >
@@ -138,43 +181,75 @@ export function SiteLayout({ currentPath, onNavigate, children }: SiteLayoutProp
           </div>
         </div>
 
-        {/* Mobile Drawer */}
-        {mobileOpen && (
-          <div className="md:hidden border-t border-[var(--site-border)] bg-[var(--site-surface)] px-6 py-5 space-y-3">
-            {navItems.map((item) => (
-              <a
-                key={item.path}
-                href={item.path}
-                onClick={(e) => {
-                  e.preventDefault();
-                  setMobileOpen(false);
-                  onNavigate(item.path);
-                }}
-                className="block py-2 text-base font-medium text-[var(--site-text)]"
-              >
-                {item.label}
-              </a>
-            ))}
-            <button
-              type="button"
-              onClick={() => {
-                setMobileOpen(false);
-                handlePrimaryCta();
-              }}
-              className="w-full py-3 text-sm font-medium bg-[var(--site-text)] text-[var(--site-surface)] rounded-[var(--site-radius)]"
+        {/* Discreet 2px scroll-progress hairline */}
+        <ScrollProgressLine />
+
+        {/* Animated Mobile Drawer */}
+        <AnimatePresence>
+          {mobileOpen && (
+            <motion.div
+              initial={prefersReduced ? { opacity: 1 } : { opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={prefersReduced ? { opacity: 0 } : { opacity: 0, y: -8 }}
+              transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+              className="md:hidden border-t border-[var(--site-border)] bg-[var(--site-surface)] px-6 py-6 space-y-2 shadow-lg"
             >
-              Atendimento
-            </button>
-          </div>
-        )}
+              {navItems.map((item) => {
+                const active = currentPath === item.path;
+                return (
+                  <a
+                    key={item.path}
+                    href={item.path}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      setMobileOpen(false);
+                      onNavigate(item.path);
+                    }}
+                    className={`flex items-center justify-between py-2.5 text-base font-medium border-b border-[var(--site-border)]/60 ${
+                      active ? 'text-[var(--site-accent)]' : 'text-[var(--site-text)]'
+                    }`}
+                  >
+                    <span>{item.label}</span>
+                    <ArrowUpRight className="w-4 h-4 opacity-50" />
+                  </a>
+                );
+              })}
+              <div className="pt-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMobileOpen(false);
+                    handlePrimaryCta();
+                  }}
+                  className="w-full py-3.5 text-sm font-medium bg-[var(--site-text)] text-[var(--site-surface)] rounded-[var(--site-radius)]"
+                >
+                  Atendimento Personalizado
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </header>
 
-      <main className="flex-1">{children}</main>
+      {/* Smooth Editorial Route Canvas */}
+      <main className="flex-1">
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={currentPath}
+            initial={prefersReduced ? false : { opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={prefersReduced ? undefined : { opacity: 0 }}
+            transition={{ duration: 0.32, ease: [0.22, 1, 0.36, 1] }}
+          >
+            {children}
+          </motion.div>
+        </AnimatePresence>
+      </main>
 
       {/* Complete Architectural Footer */}
       <footer className="border-t border-[var(--site-border)] bg-[var(--site-surface)] text-[var(--site-text)]">
-        <div className="max-w-7xl mx-auto px-6 py-16 grid grid-cols-1 md:grid-cols-12 gap-12">
-          <div className="md:col-span-5 space-y-4">
+        <div className="max-w-7xl mx-auto px-6 py-20 grid grid-cols-1 md:grid-cols-12 gap-12">
+          <div className="md:col-span-5 space-y-5">
             {tenant.logoUrl && !logoError ? (
               <div>
                 <img
@@ -186,27 +261,29 @@ export function SiteLayout({ currentPath, onNavigate, children }: SiteLayoutProp
                 <h3 className="sr-only">{tenant.brandName}</h3>
               </div>
             ) : (
-              <h3 className="font-editorial text-2xl font-semibold">{tenant.brandName}</h3>
+              <h3 className="font-editorial text-3xl font-semibold tracking-tight">
+                {tenant.brandName}
+              </h3>
             )}
             <p className="text-sm text-[var(--site-text-muted)] leading-relaxed max-w-md">
               {tenant.seoDescription || tenant.heroSubtitle}
             </p>
-            <div className="text-xs text-[var(--site-text-muted)] space-y-1">
-              <p>
+            <div className="pt-2 border-t border-[var(--site-border)] text-xs text-[var(--site-text-muted)] space-y-1.5 max-w-sm">
+              <p className="font-medium text-[var(--site-text)]">
                 {tenant.city}
                 {tenant.state ? `, ${tenant.state}` : ''}
                 {tenant.creci ? ` · ${tenant.creci}` : ''}
               </p>
               {tenant.email && <p>{tenant.email}</p>}
-              {tenant.phone && <p>{tenant.phone}</p>}
+              {tenant.phone && <p className="font-mono tabular-nums">{tenant.phone}</p>}
             </div>
           </div>
 
-          <div className="md:col-span-3 space-y-3">
-            <p className="text-xs font-semibold tracking-wider text-[var(--site-text-muted)]">
+          <div className="md:col-span-3 space-y-4">
+            <p className="text-[11px] font-mono uppercase tracking-[0.16em] text-[var(--site-accent)]">
               Navegação
             </p>
-            <ul className="space-y-2.5 text-sm">
+            <ul className="space-y-3 text-sm">
               {navItems.map((item) => (
                 <li key={item.path}>
                   <a
@@ -215,7 +292,7 @@ export function SiteLayout({ currentPath, onNavigate, children }: SiteLayoutProp
                       e.preventDefault();
                       onNavigate(item.path);
                     }}
-                    className="text-[var(--site-text-muted)] hover:text-[var(--site-text)] transition-colors"
+                    className="editorial-link text-[var(--site-text-muted)] hover:text-[var(--site-text)] transition-colors"
                   >
                     {item.label}
                   </a>
@@ -228,7 +305,7 @@ export function SiteLayout({ currentPath, onNavigate, children }: SiteLayoutProp
                     e.preventDefault();
                     onNavigate('/privacidade');
                   }}
-                  className="text-[var(--site-text-muted)] hover:text-[var(--site-text)] transition-colors"
+                  className="editorial-link text-[var(--site-text-muted)] hover:text-[var(--site-text)] transition-colors"
                 >
                   Privacidade & LGPD
                 </a>
@@ -236,20 +313,20 @@ export function SiteLayout({ currentPath, onNavigate, children }: SiteLayoutProp
             </ul>
           </div>
 
-          <div className="md:col-span-4 space-y-3">
-            <p className="text-xs font-semibold tracking-wider text-[var(--site-text-muted)]">
+          <div className="md:col-span-4 space-y-4">
+            <p className="text-[11px] font-mono uppercase tracking-[0.16em] text-[var(--site-accent)]">
               Regiões & Canais
             </p>
             <p className="text-sm text-[var(--site-text-muted)] leading-relaxed">
               {tenant.regions.join(' · ')}
             </p>
-            <div className="pt-2 flex flex-wrap gap-4 text-sm">
+            <div className="pt-3 flex flex-wrap gap-5 text-sm">
               {tenant.instagramUrl && (
                 <a
                   href={tenant.instagramUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="underline underline-offset-4 text-[var(--site-text)] hover:text-[var(--site-accent)]"
+                  className="editorial-link font-medium text-[var(--site-text)] hover:text-[var(--site-accent)] transition-colors"
                 >
                   {tenant.instagramHandle || 'Instagram'}
                 </a>
@@ -259,7 +336,7 @@ export function SiteLayout({ currentPath, onNavigate, children }: SiteLayoutProp
                   href={whatsappUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="underline underline-offset-4 text-[var(--site-text)] hover:text-[var(--site-accent)]"
+                  className="editorial-link font-medium text-[var(--site-text)] hover:text-[var(--site-accent)] transition-colors"
                 >
                   WhatsApp Comercial
                 </a>
@@ -268,7 +345,7 @@ export function SiteLayout({ currentPath, onNavigate, children }: SiteLayoutProp
           </div>
         </div>
 
-        <div className="border-t border-[var(--site-border)]">
+        <div className="border-t border-[var(--site-border)] bg-[var(--site-bg)]/60">
           <div className="max-w-7xl mx-auto px-6 py-5 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-[var(--site-text-muted)]">
             <p>
               © {new Date().getFullYear()} {tenant.brandName}. Todos os direitos reservados.

@@ -8,19 +8,21 @@ import {
   query,
   serverTimestamp,
   setDoc,
-  updateDoc,
   where,
   Unsubscribe,
 } from 'firebase/firestore';
 import { User } from 'firebase/auth';
 import {
+  auth,
   BOOTSTRAPPED_ADMIN_EMAIL,
   db,
+  FirestoreErrorInfo,
   handleFirestoreError,
   isBootAdminUser,
   OperationType,
 } from './config';
 import { DEFAULT_TENANT, DEFAULT_TENANT_ID } from '../config/defaultTenant';
+import { THEME_PRESETS } from '../config/themes';
 import {
   AiJob,
   AnalyticsEvent,
@@ -32,23 +34,47 @@ import {
   Property,
   Tenant,
   Testimonial,
+  ThemePresetId,
   UserProfile,
 } from '../types/realestate';
 import { generateSafeId, slugify } from '../utils/formatters';
 
-function cleanUndefined<T extends Record<string, unknown>>(obj: T): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(obj)) {
-    if (v !== undefined) {
-      out[k] = v;
-    }
+function isPlainObject(val: unknown): val is Record<string, unknown> {
+  if (typeof val !== 'object' || val === null) return false;
+  const proto = Object.getPrototypeOf(val);
+  return proto === Object.prototype || proto === null;
+}
+
+function deepCleanUndefined<T>(val: T): T {
+  if (Array.isArray(val)) {
+    return val
+      .filter((item) => item !== undefined)
+      .map((item) => deepCleanUndefined(item)) as unknown as T;
   }
-  return out;
+  if (isPlainObject(val)) {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(val)) {
+      if (v !== undefined) {
+        out[k] = deepCleanUndefined(v);
+      }
+    }
+    return out as T;
+  }
+  return val;
+}
+
+function cleanUndefined<T extends Record<string, unknown>>(obj: T): Record<string, unknown> {
+  return deepCleanUndefined(obj);
 }
 
 function clampStr(val: unknown, maxLen: number): string {
   if (typeof val !== 'string') return '';
   return val.slice(0, maxLen);
+}
+
+function clampReqStr(val: unknown, maxLen: number, fallback: string): string {
+  const s = typeof val === 'string' ? val.trim() : '';
+  return (s || fallback).slice(0, maxLen);
 }
 
 function clampSlug(val: unknown, fallback = 'item'): string {
@@ -60,13 +86,152 @@ function clampStrArray(val: unknown, maxItems: number, maxItemLen = 180): string
   return val
     .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
     .slice(0, maxItems)
-    .map((s) => s.slice(0, maxItemLen));
+    .map((s) => s.trim().slice(0, maxItemLen));
 }
 
 function clampNumber(val: unknown, min = 0): number {
   const n = Number(val);
   if (!Number.isFinite(n) || n < min) return min;
   return n;
+}
+
+function clampMapArray(val: unknown, maxItems: number): Record<string, unknown>[] {
+  if (!Array.isArray(val)) return [];
+  return val
+    .filter((item): item is Record<string, unknown> => isPlainObject(item))
+    .slice(0, maxItems)
+    .map((item) => deepCleanUndefined(item));
+}
+
+function reportListenerError(
+  error: unknown,
+  operationType: OperationType,
+  path: string,
+  onError?: (err: Error) => void
+): void {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid ?? null,
+      email: auth.currentUser?.email ?? null,
+      emailVerified: auth.currentUser?.emailVerified ?? null,
+      isAnonymous: auth.currentUser?.isAnonymous ?? null,
+      tenantId: auth.currentUser?.tenantId ?? null,
+      providerInfo:
+        auth.currentUser?.providerData?.map((provider) => ({
+          providerId: provider.providerId,
+          email: provider.email,
+        })) || [],
+    },
+    operationType,
+    path,
+  };
+  console.error('Firestore Listener Error: ', JSON.stringify(errInfo));
+  if (onError) {
+    onError(new Error(JSON.stringify(errInfo)));
+  }
+}
+
+const VALID_THEME_PRESETS: ThemePresetId[] = [
+  'luxo-contemporaneo',
+  'minimalista-premium',
+  'imobiliario-moderno',
+  'elegancia-classica',
+  'arquitetura-editorial',
+];
+
+function sanitizeThemePreset(val: unknown): ThemePresetId {
+  if (typeof val === 'string' && VALID_THEME_PRESETS.includes(val as ThemePresetId)) {
+    return val as ThemePresetId;
+  }
+  return DEFAULT_TENANT.themePreset;
+}
+
+/**
+ * Merges a persisted Firestore tenant document with safe baseline defaults ONLY when a field
+ * is genuinely undefined (missing in legacy documents), never overwriting intentional admin edits
+ * or cleared fields.
+ */
+function hydrateTenantDocument(loaded: Partial<Tenant>, tenantId: string): Tenant {
+  const base = tenantId === DEFAULT_TENANT_ID ? DEFAULT_TENANT : { ...DEFAULT_TENANT, id: tenantId };
+  const themePreset = sanitizeThemePreset(loaded.themePreset ?? base.themePreset);
+  const presetConfig = THEME_PRESETS[themePreset].config;
+
+  // Only upgrade broken external third-party placeholder URLs from legacy seeds
+  const sanitizeLegacyUrl = (val: string | undefined, fallback: string): string => {
+    if (val === undefined) return fallback;
+    if (val.includes('wxmntYHq')) return fallback;
+    return val;
+  };
+
+  return {
+    ...base,
+    ...loaded,
+    id: loaded.id || tenantId,
+    themePreset,
+    themeConfig: {
+      ...presetConfig,
+      ...(isPlainObject(loaded.themeConfig) ? loaded.themeConfig : {}),
+    },
+    logoUrl: sanitizeLegacyUrl(loaded.logoUrl, base.logoUrl),
+    faviconUrl: sanitizeLegacyUrl(loaded.faviconUrl, base.faviconUrl),
+    aboutPhotoUrl: loaded.aboutPhotoUrl !== undefined ? loaded.aboutPhotoUrl : base.aboutPhotoUrl,
+    regions: Array.isArray(loaded.regions) ? loaded.regions : base.regions,
+    heroImages: Array.isArray(loaded.heroImages) ? loaded.heroImages : base.heroImages,
+    specialties: Array.isArray(loaded.specialties) ? loaded.specialties : base.specialties,
+    differentials: Array.isArray(loaded.differentials) ? loaded.differentials : base.differentials,
+  };
+}
+
+function buildSanitizedTenantFields(source: Partial<Tenant>, fallback: Tenant = DEFAULT_TENANT): Record<string, unknown> {
+  const themePreset = sanitizeThemePreset(source.themePreset ?? fallback.themePreset);
+  const rawThemeConfig = source.themeConfig ?? fallback.themeConfig ?? THEME_PRESETS[themePreset].config;
+  const differentials = Array.isArray(source.differentials ?? fallback.differentials)
+    ? (source.differentials ?? fallback.differentials)
+        .filter((d): d is { title: string; description: string } => isPlainObject(d))
+        .slice(0, 12)
+        .map((d) => ({
+          title: clampStr(d.title, 120),
+          description: clampStr(d.description, 400),
+        }))
+    : [];
+
+  return cleanUndefined({
+    brandName: clampReqStr(source.brandName ?? fallback.brandName, 120, DEFAULT_TENANT.brandName),
+    brokerName: clampReqStr(source.brokerName ?? fallback.brokerName, 120, DEFAULT_TENANT.brokerName),
+    creci: clampStr(source.creci ?? fallback.creci ?? '', 60),
+    city: clampReqStr(source.city ?? fallback.city, 80, DEFAULT_TENANT.city),
+    state: clampStr(source.state ?? fallback.state ?? '', 20),
+    regions: clampStrArray(source.regions ?? fallback.regions ?? [], 30, 80),
+    whatsapp: clampStr(source.whatsapp ?? fallback.whatsapp ?? '', 30),
+    phone: clampStr(source.phone ?? fallback.phone ?? '', 30),
+    email: clampStr(source.email ?? fallback.email ?? '', 200),
+    instagramHandle: clampStr(source.instagramHandle ?? fallback.instagramHandle ?? '', 80),
+    instagramUrl: clampStr(source.instagramUrl ?? fallback.instagramUrl ?? '', 500),
+    logoUrl: clampStr(source.logoUrl ?? fallback.logoUrl ?? '', 1000),
+    faviconUrl: clampStr(source.faviconUrl ?? fallback.faviconUrl ?? '', 1000),
+    heroTitle: clampStr(source.heroTitle ?? fallback.heroTitle ?? '', 200),
+    heroSubtitle: clampStr(source.heroSubtitle ?? fallback.heroSubtitle ?? '', 500),
+    heroCtaText: clampStr(source.heroCtaText ?? fallback.heroCtaText ?? '', 60),
+    heroImages: clampStrArray(source.heroImages ?? fallback.heroImages ?? [], 10, 1000),
+    aboutHeadline: clampStr(source.aboutHeadline ?? fallback.aboutHeadline ?? '', 200),
+    aboutBio: clampStr(source.aboutBio ?? fallback.aboutBio ?? '', 4000),
+    aboutPhotoUrl: clampStr(source.aboutPhotoUrl ?? fallback.aboutPhotoUrl ?? '', 1000),
+    aboutExperienceYears: clampStr(source.aboutExperienceYears ?? fallback.aboutExperienceYears ?? '', 40),
+    specialties: clampStrArray(source.specialties ?? fallback.specialties ?? [], 20, 120),
+    differentials,
+    themePreset,
+    themeConfig: isPlainObject(rawThemeConfig) ? deepCleanUndefined(rawThemeConfig) : THEME_PRESETS[themePreset].config,
+    seoTitle: clampStr(source.seoTitle ?? fallback.seoTitle ?? '', 160),
+    seoDescription: clampStr(source.seoDescription ?? fallback.seoDescription ?? '', 320),
+    ga4Id: clampStr(source.ga4Id ?? fallback.ga4Id ?? '', 60),
+    gtmId: clampStr(source.gtmId ?? fallback.gtmId ?? '', 60),
+    gscVerification: clampStr(source.gscVerification ?? fallback.gscVerification ?? '', 120),
+    googleAdsId: clampStr(source.googleAdsId ?? fallback.googleAdsId ?? '', 60),
+    lgpdPrivacyText: clampStr(source.lgpdPrivacyText ?? fallback.lgpdPrivacyText ?? '', 6000),
+    customDomain: clampStr(source.customDomain ?? fallback.customDomain ?? '', 200),
+    status: (source.status ?? fallback.status) === 'inactive' ? 'inactive' : 'active',
+  });
 }
 
 // Auto-provision admin, user profile, and default Ivy Oliveira tenant on login
@@ -77,14 +242,18 @@ export async function bootstrapUserAndTenant(user: User): Promise<{
 }> {
   const isBootAdmin = isBootAdminUser(user);
 
-  try {
+  const runBootstrap = async (): Promise<{
+    profile: UserProfile;
+    tenant: Tenant;
+    isAdmin: boolean;
+  }> => {
     if (isBootAdmin) {
       const adminRef = doc(db, 'admins', user.uid);
       const adminSnap = await getDoc(adminRef);
       if (!adminSnap.exists()) {
         await setDoc(adminRef, {
           uid: user.uid,
-          email: user.email || BOOTSTRAPPED_ADMIN_EMAIL,
+          email: clampReqStr(user.email?.toLowerCase(), 200, BOOTSTRAPPED_ADMIN_EMAIL),
           createdAt: serverTimestamp(),
         });
       }
@@ -98,9 +267,9 @@ export async function bootstrapUserAndTenant(user: User): Promise<{
       const assignedTenantId = isBootAdmin ? DEFAULT_TENANT_ID : `broker_${user.uid.slice(0, 12)}`;
       profile = {
         uid: user.uid,
-        email: user.email || '',
-        displayName: user.displayName || user.email?.split('@')[0] || 'Administrador',
-        photoURL: user.photoURL || '',
+        email: clampReqStr(user.email?.toLowerCase(), 200, 'admin@ivyoliveira.com'),
+        displayName: clampReqStr(user.displayName || user.email?.split('@')[0], 120, 'Administrador'),
+        photoURL: clampStr(user.photoURL || '', 1000),
         role: isBootAdmin ? 'admin' : 'broker',
         tenantId: assignedTenantId,
       };
@@ -110,18 +279,27 @@ export async function bootstrapUserAndTenant(user: User): Promise<{
         updatedAt: serverTimestamp(),
       });
     } else {
-      profile = userSnap.data() as UserProfile;
+      const existingProfile = userSnap.data() as UserProfile & { createdAt?: unknown };
+      profile = existingProfile;
       if (isBootAdmin && (profile.role !== 'admin' || profile.tenantId !== DEFAULT_TENANT_ID)) {
-        profile = {
-          ...profile,
+        const sanitizedProfile: UserProfile = {
+          uid: existingProfile.uid || user.uid,
+          email: clampReqStr(existingProfile.email || user.email?.toLowerCase(), 200, BOOTSTRAPPED_ADMIN_EMAIL),
+          displayName: clampReqStr(
+            existingProfile.displayName || user.displayName || user.email?.split('@')[0],
+            120,
+            'Administrador'
+          ),
+          photoURL: clampStr(existingProfile.photoURL || user.photoURL || '', 1000),
           role: 'admin',
           tenantId: DEFAULT_TENANT_ID,
         };
-        await updateDoc(userRef, {
-          role: 'admin',
-          tenantId: DEFAULT_TENANT_ID,
+        await setDoc(userRef, {
+          ...cleanUndefined(sanitizedProfile as unknown as Record<string, unknown>),
+          createdAt: existingProfile.createdAt ?? serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
+        profile = sanitizedProfile;
       }
     }
 
@@ -136,7 +314,7 @@ export async function bootstrapUserAndTenant(user: User): Promise<{
             ...DEFAULT_TENANT,
             id: profile.tenantId,
             ownerUid: user.uid,
-            slug: `corretor-${user.uid.slice(0, 8).toLowerCase()}`,
+            slug: clampSlug(`corretor-${user.uid.slice(0, 8)}`, 'corretor'),
             brandName: profile.displayName,
             brokerName: profile.displayName,
             email: profile.email,
@@ -150,50 +328,62 @@ export async function bootstrapUserAndTenant(user: User): Promise<{
             instagramUrl: '',
           };
 
+      const sanitizedFields = buildSanitizedTenantFields(baseTenant, baseTenant);
       await setDoc(tenantRef, {
-        ...cleanUndefined(baseTenant as unknown as Record<string, unknown>),
+        id: baseTenant.id,
+        ownerUid: user.uid,
+        slug: clampSlug(baseTenant.slug, DEFAULT_TENANT.slug),
+        ...sanitizedFields,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
       tenant = baseTenant;
     } else {
-      const existing = tenantSnap.data() as Tenant;
-      const useDefaultAbout =
-        !existing.aboutPhotoUrl || existing.aboutPhotoUrl.includes('editorial_advisory_studio_');
-      const normalizedExisting: Tenant = {
-        ...existing,
-        heroTitle: existing.heroTitle?.replace(/Curadoria/gi, 'Consultoria') || '',
-        heroSubtitle: existing.heroSubtitle?.replace(/Curadoria/gi, 'Consultoria') || '',
-        seoTitle: existing.seoTitle?.replace(/Curadoria/gi, 'Consultoria') || '',
-        differentials: (existing.differentials || []).map((d) => ({
-          ...d,
-          title: d.title?.replace(/Curadoria Arquitetônica/gi, 'Seleção Arquitetônica').replace(/Curadoria/gi, 'Consultoria'),
-        })),
-      };
-      const useDefaultLogo =
-        !existing.logoUrl ||
-        existing.logoUrl.includes('wxmntYHq') ||
-        existing.logoUrl.includes('logo_ivy_oliveira.png');
-      const useDefaultFavicon =
-        !existing.faviconUrl ||
-        existing.faviconUrl.includes('wxmntYHq') ||
-        existing.faviconUrl.includes('logo_ivy_oliveira.png');
-      tenant =
-        profile.tenantId === DEFAULT_TENANT_ID
-          ? {
-              ...DEFAULT_TENANT,
-              ...normalizedExisting,
-              logoUrl: useDefaultLogo ? DEFAULT_TENANT.logoUrl : existing.logoUrl,
-              faviconUrl: useDefaultFavicon ? DEFAULT_TENANT.faviconUrl : existing.faviconUrl,
-              aboutPhotoUrl: useDefaultAbout ? DEFAULT_TENANT.aboutPhotoUrl : existing.aboutPhotoUrl,
-            }
-          : normalizedExisting;
+      const rawExisting = tenantSnap.data() as Partial<Tenant> & { createdAt?: unknown };
+      tenant = hydrateTenantDocument(rawExisting, profile.tenantId);
+
+      // Auto-heal broken legacy placeholder URLs or missing theme config once on admin login without overwriting valid edits
+      const hasLegacyBrokenUrl =
+        typeof rawExisting.logoUrl === 'string' && rawExisting.logoUrl.includes('wxmntYHq') ||
+        typeof rawExisting.faviconUrl === 'string' && rawExisting.faviconUrl.includes('wxmntYHq');
+      const missingCoreStructure = !rawExisting.themeConfig || !rawExisting.themePreset;
+
+      if (isBootAdmin && (hasLegacyBrokenUrl || missingCoreStructure) && rawExisting.createdAt) {
+        const sanitizedFields = buildSanitizedTenantFields(tenant, DEFAULT_TENANT);
+        const preservedSlug =
+          typeof rawExisting.slug === 'string' && /^[a-z0-9-]+$/.test(rawExisting.slug)
+            ? rawExisting.slug
+            : clampSlug(rawExisting.slug || profile.tenantId, DEFAULT_TENANT.slug);
+        await setDoc(tenantRef, {
+          id: rawExisting.id || profile.tenantId,
+          ownerUid: rawExisting.ownerUid || user.uid,
+          slug: preservedSlug,
+          ...sanitizedFields,
+          createdAt: rawExisting.createdAt,
+          updatedAt: serverTimestamp(),
+        });
+      }
     }
 
     const adminCheck = isBootAdmin || profile.role === 'admin';
     return { profile, tenant, isAdmin: adminCheck };
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, 'users/bootstrap');
+  };
+
+  try {
+    return await runBootstrap();
+  } catch (firstErr) {
+    const msg = firstErr instanceof Error ? firstErr.message.toLowerCase() : '';
+    const isTransient =
+      msg.includes('unavailable') || msg.includes('offline') || msg.includes('network') || msg.includes('deadline');
+    if (isTransient) {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      try {
+        return await runBootstrap();
+      } catch (retryErr) {
+        handleFirestoreError(retryErr, OperationType.WRITE, 'users/bootstrap');
+      }
+    }
+    handleFirestoreError(firstErr, OperationType.WRITE, 'users/bootstrap');
   }
 }
 
@@ -207,38 +397,7 @@ export function subscribePublicTenant(
     ref,
     (snap) => {
       if (snap.exists()) {
-        const loaded = snap.data() as Tenant;
-        const useDefaultAbout =
-          !loaded.aboutPhotoUrl || loaded.aboutPhotoUrl.includes('editorial_advisory_studio_');
-        const normalizedLoaded: Tenant = {
-          ...loaded,
-          heroTitle: loaded.heroTitle?.replace(/Curadoria/gi, 'Consultoria') || '',
-          heroSubtitle: loaded.heroSubtitle?.replace(/Curadoria/gi, 'Consultoria') || '',
-          seoTitle: loaded.seoTitle?.replace(/Curadoria/gi, 'Consultoria') || '',
-          differentials: (loaded.differentials || []).map((d) => ({
-            ...d,
-            title: d.title?.replace(/Curadoria Arquitetônica/gi, 'Seleção Arquitetônica').replace(/Curadoria/gi, 'Consultoria'),
-          })),
-        };
-        const useDefaultLogo =
-          !loaded.logoUrl ||
-          loaded.logoUrl.includes('wxmntYHq') ||
-          loaded.logoUrl.includes('logo_ivy_oliveira.png');
-        const useDefaultFavicon =
-          !loaded.faviconUrl ||
-          loaded.faviconUrl.includes('wxmntYHq') ||
-          loaded.faviconUrl.includes('logo_ivy_oliveira.png');
-        onData(
-          tenantId === DEFAULT_TENANT_ID
-            ? {
-                ...DEFAULT_TENANT,
-                ...normalizedLoaded,
-                logoUrl: useDefaultLogo ? DEFAULT_TENANT.logoUrl : loaded.logoUrl,
-                faviconUrl: useDefaultFavicon ? DEFAULT_TENANT.faviconUrl : loaded.faviconUrl,
-                aboutPhotoUrl: useDefaultAbout ? DEFAULT_TENANT.aboutPhotoUrl : loaded.aboutPhotoUrl,
-              }
-            : normalizedLoaded
-        );
+        onData(hydrateTenantDocument(snap.data() as Partial<Tenant>, tenantId));
       } else {
         onData(DEFAULT_TENANT);
       }
@@ -259,55 +418,90 @@ export async function listTenants(isAdmin: boolean, ownerUid?: string): Promise<
         ? query(collection(db, 'tenants'), where('ownerUid', '==', ownerUid))
         : query(collection(db, 'tenants'), where('status', '==', 'active'));
     const snap = await getDocs(q);
-    return snap.docs.map((d) => d.data() as Tenant);
+    return snap.docs.map((d) => hydrateTenantDocument(d.data() as Partial<Tenant>, d.id));
   } catch (err) {
     handleFirestoreError(err, OperationType.LIST, 'tenants');
+  }
+}
+
+export function subscribeManagedTenants(
+  isAdmin: boolean,
+  ownerUid: string,
+  onData: (items: Tenant[]) => void,
+  onError?: (err: Error) => void
+): Unsubscribe {
+  const q = isAdmin
+    ? query(collection(db, 'tenants'))
+    : query(collection(db, 'tenants'), where('ownerUid', '==', ownerUid));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const items = snap.docs.map((d) => hydrateTenantDocument(d.data() as Partial<Tenant>, d.id));
+      onData(items);
+    },
+    (err) => reportListenerError(err, OperationType.LIST, 'tenants', onError)
+  );
+}
+
+export async function createTenantDocument(newTenant: Tenant): Promise<void> {
+  const path = `tenants/${newTenant.id}`;
+  try {
+    const currentUid = auth.currentUser?.uid || newTenant.ownerUid;
+    const fields = buildSanitizedTenantFields(newTenant, DEFAULT_TENANT);
+    await setDoc(doc(db, 'tenants', newTenant.id), {
+      id: newTenant.id,
+      ownerUid: currentUid,
+      slug: clampSlug(newTenant.slug || newTenant.brandName, 'corretor'),
+      ...fields,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.CREATE, path);
   }
 }
 
 export async function updateTenantSettings(tenantId: string, updates: Partial<Tenant>): Promise<void> {
   const path = `tenants/${tenantId}`;
   try {
-    const safeUpdates = cleanUndefined({
-      ...updates,
-      brandName: updates.brandName !== undefined ? clampStr(updates.brandName, 120) : undefined,
-      brokerName: updates.brokerName !== undefined ? clampStr(updates.brokerName, 120) : undefined,
-      creci: updates.creci !== undefined ? clampStr(updates.creci, 60) : undefined,
-      city: updates.city !== undefined ? clampStr(updates.city, 80) : undefined,
-      state: updates.state !== undefined ? clampStr(updates.state, 20) : undefined,
-      regions: updates.regions !== undefined ? clampStrArray(updates.regions, 30, 80) : undefined,
-      whatsapp: updates.whatsapp !== undefined ? clampStr(updates.whatsapp, 30) : undefined,
-      phone: updates.phone !== undefined ? clampStr(updates.phone, 30) : undefined,
-      email: updates.email !== undefined ? clampStr(updates.email, 200) : undefined,
-      instagramHandle: updates.instagramHandle !== undefined ? clampStr(updates.instagramHandle, 80) : undefined,
-      instagramUrl: updates.instagramUrl !== undefined ? clampStr(updates.instagramUrl, 500) : undefined,
-      logoUrl: updates.logoUrl !== undefined ? clampStr(updates.logoUrl, 1000) : undefined,
-      faviconUrl: updates.faviconUrl !== undefined ? clampStr(updates.faviconUrl, 1000) : undefined,
-      heroTitle: updates.heroTitle !== undefined ? clampStr(updates.heroTitle, 200) : undefined,
-      heroSubtitle: updates.heroSubtitle !== undefined ? clampStr(updates.heroSubtitle, 500) : undefined,
-      heroCtaText: updates.heroCtaText !== undefined ? clampStr(updates.heroCtaText, 60) : undefined,
-      heroImages: updates.heroImages !== undefined ? clampStrArray(updates.heroImages, 10, 1000) : undefined,
-      aboutHeadline: updates.aboutHeadline !== undefined ? clampStr(updates.aboutHeadline, 200) : undefined,
-      aboutBio: updates.aboutBio !== undefined ? clampStr(updates.aboutBio, 4000) : undefined,
-      aboutPhotoUrl: updates.aboutPhotoUrl !== undefined ? clampStr(updates.aboutPhotoUrl, 1000) : undefined,
-      aboutExperienceYears: updates.aboutExperienceYears !== undefined ? clampStr(updates.aboutExperienceYears, 40) : undefined,
-      specialties: updates.specialties !== undefined ? clampStrArray(updates.specialties, 20, 120) : undefined,
-      differentials: updates.differentials !== undefined ? updates.differentials.slice(0, 12) : undefined,
-      seoTitle: updates.seoTitle !== undefined ? clampStr(updates.seoTitle, 160) : undefined,
-      seoDescription: updates.seoDescription !== undefined ? clampStr(updates.seoDescription, 320) : undefined,
-      ga4Id: updates.ga4Id !== undefined ? clampStr(updates.ga4Id, 60) : undefined,
-      gtmId: updates.gtmId !== undefined ? clampStr(updates.gtmId, 60) : undefined,
-      gscVerification: updates.gscVerification !== undefined ? clampStr(updates.gscVerification, 120) : undefined,
-      googleAdsId: updates.googleAdsId !== undefined ? clampStr(updates.googleAdsId, 60) : undefined,
-      lgpdPrivacyText: updates.lgpdPrivacyText !== undefined ? clampStr(updates.lgpdPrivacyText, 6000) : undefined,
-      customDomain: updates.customDomain !== undefined ? clampStr(updates.customDomain, 200) : undefined,
-    } as Record<string, unknown>);
-    delete safeUpdates.id;
-    delete safeUpdates.ownerUid;
-    delete safeUpdates.slug;
-    delete safeUpdates.createdAt;
-    await updateDoc(doc(db, 'tenants', tenantId), {
-      ...safeUpdates,
+    const tenantRef = doc(db, 'tenants', tenantId);
+    const snap = await getDoc(tenantRef);
+
+    if (!snap.exists()) {
+      const currentUid = auth.currentUser?.uid;
+      if (!currentUid) {
+        throw new Error('Sessão administrativa expirada. Faça login novamente.');
+      }
+      const fields = buildSanitizedTenantFields(updates, DEFAULT_TENANT);
+      await setDoc(tenantRef, {
+        id: tenantId,
+        ownerUid: currentUid,
+        slug: clampSlug(updates.slug || tenantId, DEFAULT_TENANT.slug),
+        ...fields,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      return;
+    }
+
+    const existing = snap.data() as Tenant & { createdAt?: unknown };
+    const mergedFields = buildSanitizedTenantFields(
+      { ...existing, ...updates },
+      tenantId === DEFAULT_TENANT_ID ? DEFAULT_TENANT : existing
+    );
+
+    const preservedSlug =
+      typeof existing.slug === 'string' && /^[a-z0-9-]+$/.test(existing.slug)
+        ? existing.slug
+        : clampSlug(existing.slug || tenantId, DEFAULT_TENANT.slug);
+
+    // Preserve immutable fields and rewrite cleanly so legacy stray keys never fail hasOnly
+    await setDoc(tenantRef, {
+      id: existing.id || tenantId,
+      ownerUid: existing.ownerUid || auth.currentUser?.uid || '',
+      slug: preservedSlug,
+      ...mergedFields,
+      createdAt: existing.createdAt ?? serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
   } catch (err) {
@@ -318,7 +512,8 @@ export async function updateTenantSettings(tenantId: string, updates: Partial<Te
 // Real-time Public Properties Listener
 export function subscribePublishedProperties(
   tenantId: string,
-  onData: (items: Property[]) => void
+  onData: (items: Property[]) => void,
+  onError?: (err: Error) => void
 ): Unsubscribe {
   const q = query(
     collection(db, 'properties'),
@@ -332,9 +527,7 @@ export function subscribePublishedProperties(
       list.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
       onData(list);
     },
-    (err) => {
-      handleFirestoreError(err, OperationType.LIST, 'properties');
-    }
+    (err) => reportListenerError(err, OperationType.LIST, 'properties', onError)
   );
 }
 
@@ -343,7 +536,8 @@ export function subscribeManagedProperties(
   tenantId: string,
   ownerUid: string,
   isAdmin: boolean,
-  onData: (items: Property[]) => void
+  onData: (items: Property[]) => void,
+  onError?: (err: Error) => void
 ): Unsubscribe {
   const q = isAdmin
     ? query(collection(db, 'properties'), where('tenantId', '==', tenantId))
@@ -359,9 +553,7 @@ export function subscribeManagedProperties(
       list.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
       onData(list);
     },
-    (err) => {
-      handleFirestoreError(err, OperationType.LIST, 'properties');
-    }
+    (err) => reportListenerError(err, OperationType.LIST, 'properties', onError)
   );
 }
 
@@ -371,17 +563,24 @@ export async function saveProperty(
 ): Promise<void> {
   const path = `properties/${property.id}`;
   try {
-    const sanitized = cleanUndefined({
-      ...property,
+    const validPropertyTypes = ['casa', 'apartamento', 'cobertura', 'terreno', 'comercial'];
+    const validTxTypes = ['venda', 'aluguel', 'lancamento'];
+    const validTourTypes = ['photo', 'panorama360', '3d'];
+    const validStatuses = ['draft', 'published', 'sold', 'rented'];
+
+    const mutableFields = cleanUndefined({
       slug: clampSlug(property.slug || property.title, property.code || 'imovel'),
-      code: clampStr(property.code || 'IMV', 40),
-      title: clampStr(property.title, 180),
+      code: clampReqStr(property.code, 40, 'IMV'),
+      title: clampReqStr(property.title, 180, 'Imóvel'),
+      propertyType: validPropertyTypes.includes(property.propertyType) ? property.propertyType : 'apartamento',
+      transactionType: validTxTypes.includes(property.transactionType) ? property.transactionType : 'venda',
       price: clampNumber(property.price, 0),
       condoFee: clampNumber(property.condoFee, 0),
       iptu: clampNumber(property.iptu, 0),
-      city: clampStr(property.city, 80),
-      neighborhood: clampStr(property.neighborhood, 100),
+      city: clampReqStr(property.city, 80, 'Rio de Janeiro'),
+      neighborhood: clampReqStr(property.neighborhood, 100, 'Centro'),
       address: clampStr(property.address, 240),
+      showExactAddress: Boolean(property.showExactAddress),
       builtArea: clampNumber(property.builtArea, 0),
       totalArea: clampNumber(property.totalArea, 0),
       bedrooms: clampNumber(property.bedrooms, 0),
@@ -393,32 +592,57 @@ export async function saveProperty(
       features: clampStrArray(property.features, 40, 200),
       differentials: clampStrArray(property.differentials, 25, 200),
       coverImage: clampStr(property.coverImage, 1000),
-      images: Array.isArray(property.images) ? property.images.slice(0, 50) : [],
-      videos: Array.isArray(property.videos) ? property.videos.slice(0, 12) : [],
-      panorama360Images: Array.isArray(property.panorama360Images) ? property.panorama360Images.slice(0, 20) : [],
+      images: clampMapArray(property.images, 50),
+      videos: clampMapArray(property.videos, 12),
+      panorama360Images: clampMapArray(property.panorama360Images, 20),
+      virtualTourType: validTourTypes.includes(property.virtualTourType) ? property.virtualTourType : 'photo',
+      status: validStatuses.includes(property.status) ? property.status : 'draft',
+      featured: Boolean(property.featured),
+      sortOrder: Number.isFinite(Number(property.sortOrder)) ? Number(property.sortOrder) : 0,
       seoTitle: clampStr(property.seoTitle, 160),
       seoDescription: clampStr(property.seoDescription, 320),
       socialCopy: clampStr(property.socialCopy, 2000),
       whatsappCopy: clampStr(property.whatsappCopy, 1000),
-      viewsCount: clampNumber(property.viewsCount, 0),
-    } as Record<string, unknown>);
+    });
 
+    const ref = doc(db, 'properties', property.id);
     if (isNew) {
-      await setDoc(doc(db, 'properties', property.id), {
-        ...sanitized,
+      await setDoc(ref, {
+        id: property.id,
+        tenantId: property.tenantId,
+        ownerUid: property.ownerUid || auth.currentUser?.uid || '',
+        ...mutableFields,
+        viewsCount: clampNumber(property.viewsCount, 0),
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
-    } else {
-      delete sanitized.id;
-      delete sanitized.tenantId;
-      delete sanitized.ownerUid;
-      delete sanitized.createdAt;
-      await updateDoc(doc(db, 'properties', property.id), {
-        ...sanitized,
+      return;
+    }
+
+    const snap = await getDoc(ref);
+    if (!snap.exists()) {
+      await setDoc(ref, {
+        id: property.id,
+        tenantId: property.tenantId,
+        ownerUid: property.ownerUid || auth.currentUser?.uid || '',
+        ...mutableFields,
+        viewsCount: clampNumber(property.viewsCount, 0),
+        createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
+      return;
     }
+
+    const existing = snap.data() as Property & { createdAt?: unknown };
+    await setDoc(ref, {
+      id: existing.id || property.id,
+      tenantId: existing.tenantId || property.tenantId,
+      ownerUid: existing.ownerUid || property.ownerUid || auth.currentUser?.uid || '',
+      ...mutableFields,
+      viewsCount: clampNumber(existing.viewsCount ?? property.viewsCount, 0),
+      createdAt: existing.createdAt ?? serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
   } catch (err) {
     handleFirestoreError(err, isNew ? OperationType.CREATE : OperationType.UPDATE, path);
   }
@@ -435,7 +659,8 @@ export async function deleteProperty(propertyId: string): Promise<void> {
 // Developments
 export function subscribePublishedDevelopments(
   tenantId: string,
-  onData: (items: Development[]) => void
+  onData: (items: Development[]) => void,
+  onError?: (err: Error) => void
 ): Unsubscribe {
   const q = query(
     collection(db, 'developments'),
@@ -445,7 +670,7 @@ export function subscribePublishedDevelopments(
   return onSnapshot(
     q,
     (snap) => onData(snap.docs.map((d) => d.data() as Development)),
-    (err) => handleFirestoreError(err, OperationType.LIST, 'developments')
+    (err) => reportListenerError(err, OperationType.LIST, 'developments', onError)
   );
 }
 
@@ -453,7 +678,8 @@ export function subscribeManagedDevelopments(
   tenantId: string,
   ownerUid: string,
   isAdmin: boolean,
-  onData: (items: Development[]) => void
+  onData: (items: Development[]) => void,
+  onError?: (err: Error) => void
 ): Unsubscribe {
   const q = isAdmin
     ? query(collection(db, 'developments'), where('tenantId', '==', tenantId))
@@ -465,7 +691,7 @@ export function subscribeManagedDevelopments(
   return onSnapshot(
     q,
     (snap) => onData(snap.docs.map((d) => d.data() as Development)),
-    (err) => handleFirestoreError(err, OperationType.LIST, 'developments')
+    (err) => reportListenerError(err, OperationType.LIST, 'developments', onError)
   );
 }
 
@@ -475,41 +701,63 @@ export async function saveDevelopment(
 ): Promise<void> {
   const path = `developments/${dev.id}`;
   try {
-    const sanitized = cleanUndefined({
-      ...dev,
+    const validCategories = ['lancamento', 'condominio', 'residencial', 'comercial'];
+    const mutableFields = cleanUndefined({
       slug: clampSlug(dev.slug || dev.name, 'empreendimento'),
-      name: clampStr(dev.name, 160),
+      name: clampReqStr(dev.name, 160, 'Empreendimento'),
       developer: clampStr(dev.developer, 120),
-      city: clampStr(dev.city, 80),
-      neighborhood: clampStr(dev.neighborhood, 100),
+      category: validCategories.includes(dev.category) ? dev.category : 'lancamento',
+      city: clampReqStr(dev.city, 80, 'Rio de Janeiro'),
+      neighborhood: clampReqStr(dev.neighborhood, 100, 'Centro'),
       deliveryDate: clampStr(dev.deliveryDate, 60),
       priceFrom: clampNumber(dev.priceFrom, 0),
       description: clampStr(dev.description, 8000),
       technicalSpecs: clampStrArray(dev.technicalSpecs, 30, 200),
       coverImage: clampStr(dev.coverImage, 1000),
-      images: Array.isArray(dev.images) ? dev.images.slice(0, 40) : [],
-      floorPlans: Array.isArray(dev.floorPlans) ? dev.floorPlans.slice(0, 20) : [],
-      videos: Array.isArray(dev.videos) ? dev.videos.slice(0, 10) : [],
+      images: clampMapArray(dev.images, 40),
+      floorPlans: clampMapArray(dev.floorPlans, 20),
+      videos: clampMapArray(dev.videos, 10),
+      status: dev.status === 'published' ? 'published' : 'draft',
+      featured: Boolean(dev.featured),
       seoTitle: clampStr(dev.seoTitle, 160),
       seoDescription: clampStr(dev.seoDescription, 320),
-    } as Record<string, unknown>);
+    });
 
+    const ref = doc(db, 'developments', dev.id);
     if (isNew) {
-      await setDoc(doc(db, 'developments', dev.id), {
-        ...sanitized,
+      await setDoc(ref, {
+        id: dev.id,
+        tenantId: dev.tenantId,
+        ownerUid: dev.ownerUid || auth.currentUser?.uid || '',
+        ...mutableFields,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
-    } else {
-      delete sanitized.id;
-      delete sanitized.tenantId;
-      delete sanitized.ownerUid;
-      delete sanitized.createdAt;
-      await updateDoc(doc(db, 'developments', dev.id), {
-        ...sanitized,
+      return;
+    }
+
+    const snap = await getDoc(ref);
+    if (!snap.exists()) {
+      await setDoc(ref, {
+        id: dev.id,
+        tenantId: dev.tenantId,
+        ownerUid: dev.ownerUid || auth.currentUser?.uid || '',
+        ...mutableFields,
+        createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
+      return;
     }
+
+    const existing = snap.data() as Development & { createdAt?: unknown };
+    await setDoc(ref, {
+      id: existing.id || dev.id,
+      tenantId: existing.tenantId || dev.tenantId,
+      ownerUid: existing.ownerUid || dev.ownerUid || auth.currentUser?.uid || '',
+      ...mutableFields,
+      createdAt: existing.createdAt ?? serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
   } catch (err) {
     handleFirestoreError(err, isNew ? OperationType.CREATE : OperationType.UPDATE, path);
   }
@@ -526,7 +774,8 @@ export async function deleteDevelopment(id: string): Promise<void> {
 // Landing Pages
 export function subscribePublishedLandingPages(
   tenantId: string,
-  onData: (items: LandingPage[]) => void
+  onData: (items: LandingPage[]) => void,
+  onError?: (err: Error) => void
 ): Unsubscribe {
   const q = query(
     collection(db, 'landingPages'),
@@ -536,7 +785,7 @@ export function subscribePublishedLandingPages(
   return onSnapshot(
     q,
     (snap) => onData(snap.docs.map((d) => d.data() as LandingPage)),
-    (err) => handleFirestoreError(err, OperationType.LIST, 'landingPages')
+    (err) => reportListenerError(err, OperationType.LIST, 'landingPages', onError)
   );
 }
 
@@ -544,7 +793,8 @@ export function subscribeManagedLandingPages(
   tenantId: string,
   ownerUid: string,
   isAdmin: boolean,
-  onData: (items: LandingPage[]) => void
+  onData: (items: LandingPage[]) => void,
+  onError?: (err: Error) => void
 ): Unsubscribe {
   const q = isAdmin
     ? query(collection(db, 'landingPages'), where('tenantId', '==', tenantId))
@@ -556,7 +806,7 @@ export function subscribeManagedLandingPages(
   return onSnapshot(
     q,
     (snap) => onData(snap.docs.map((d) => d.data() as LandingPage)),
-    (err) => handleFirestoreError(err, OperationType.LIST, 'landingPages')
+    (err) => reportListenerError(err, OperationType.LIST, 'landingPages', onError)
   );
 }
 
@@ -566,38 +816,64 @@ export async function saveLandingPage(
 ): Promise<void> {
   const path = `landingPages/${lp.id}`;
   try {
-    const sanitized = cleanUndefined({
-      ...lp,
+    const validTemplates = ['editorial-luxo', 'lancamento-impacto', 'minimalista-direto'];
+    const mutableFields = cleanUndefined({
+      propertyId: clampStr(lp.propertyId, 128),
       slug: clampSlug(lp.slug || lp.title, 'oferta'),
-      title: clampStr(lp.title, 180),
+      template: validTemplates.includes(lp.template) ? lp.template : 'editorial-luxo',
+      title: clampReqStr(lp.title, 180, 'Oferta Exclusiva'),
       subtitle: clampStr(lp.subtitle, 400),
       heroImage: clampStr(lp.heroImage, 1000),
       description: clampStr(lp.description, 6000),
       ctaText: clampStr(lp.ctaText, 80),
       accentColor: clampStr(lp.accentColor, 30),
       highlights: clampStrArray(lp.highlights, 15, 200),
-      viewsCount: clampNumber(lp.viewsCount, 0),
-      leadsCount: clampNumber(lp.leadsCount, 0),
+      status: lp.status === 'published' ? 'published' : 'draft',
       seoTitle: clampStr(lp.seoTitle, 160),
       seoDescription: clampStr(lp.seoDescription, 320),
-    } as Record<string, unknown>);
+    });
 
+    const ref = doc(db, 'landingPages', lp.id);
     if (isNew) {
-      await setDoc(doc(db, 'landingPages', lp.id), {
-        ...sanitized,
+      await setDoc(ref, {
+        id: lp.id,
+        tenantId: lp.tenantId,
+        ownerUid: lp.ownerUid || auth.currentUser?.uid || '',
+        ...mutableFields,
+        viewsCount: clampNumber(lp.viewsCount, 0),
+        leadsCount: clampNumber(lp.leadsCount, 0),
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
-    } else {
-      delete sanitized.id;
-      delete sanitized.tenantId;
-      delete sanitized.ownerUid;
-      delete sanitized.createdAt;
-      await updateDoc(doc(db, 'landingPages', lp.id), {
-        ...sanitized,
+      return;
+    }
+
+    const snap = await getDoc(ref);
+    if (!snap.exists()) {
+      await setDoc(ref, {
+        id: lp.id,
+        tenantId: lp.tenantId,
+        ownerUid: lp.ownerUid || auth.currentUser?.uid || '',
+        ...mutableFields,
+        viewsCount: clampNumber(lp.viewsCount, 0),
+        leadsCount: clampNumber(lp.leadsCount, 0),
+        createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
+      return;
     }
+
+    const existing = snap.data() as LandingPage & { createdAt?: unknown };
+    await setDoc(ref, {
+      id: existing.id || lp.id,
+      tenantId: existing.tenantId || lp.tenantId,
+      ownerUid: existing.ownerUid || lp.ownerUid || auth.currentUser?.uid || '',
+      ...mutableFields,
+      viewsCount: clampNumber(existing.viewsCount ?? lp.viewsCount, 0),
+      leadsCount: clampNumber(existing.leadsCount ?? lp.leadsCount, 0),
+      createdAt: existing.createdAt ?? serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
   } catch (err) {
     handleFirestoreError(err, isNew ? OperationType.CREATE : OperationType.UPDATE, path);
   }
@@ -614,7 +890,8 @@ export async function deleteLandingPage(id: string): Promise<void> {
 // Testimonials
 export function subscribePublishedTestimonials(
   tenantId: string,
-  onData: (items: Testimonial[]) => void
+  onData: (items: Testimonial[]) => void,
+  onError?: (err: Error) => void
 ): Unsubscribe {
   const q = query(
     collection(db, 'testimonials'),
@@ -624,7 +901,7 @@ export function subscribePublishedTestimonials(
   return onSnapshot(
     q,
     (snap) => onData(snap.docs.map((d) => d.data() as Testimonial)),
-    (err) => handleFirestoreError(err, OperationType.LIST, 'testimonials')
+    (err) => reportListenerError(err, OperationType.LIST, 'testimonials', onError)
   );
 }
 
@@ -632,7 +909,8 @@ export function subscribeManagedTestimonials(
   tenantId: string,
   ownerUid: string,
   isAdmin: boolean,
-  onData: (items: Testimonial[]) => void
+  onData: (items: Testimonial[]) => void,
+  onError?: (err: Error) => void
 ): Unsubscribe {
   const q = isAdmin
     ? query(collection(db, 'testimonials'), where('tenantId', '==', tenantId))
@@ -644,7 +922,7 @@ export function subscribeManagedTestimonials(
   return onSnapshot(
     q,
     (snap) => onData(snap.docs.map((d) => d.data() as Testimonial)),
-    (err) => handleFirestoreError(err, OperationType.LIST, 'testimonials')
+    (err) => reportListenerError(err, OperationType.LIST, 'testimonials', onError)
   );
 }
 
@@ -653,30 +931,49 @@ export async function saveTestimonial(
   isNew: boolean
 ): Promise<void> {
   try {
-    const sanitized = cleanUndefined({
-      ...item,
-      clientName: clampStr(item.clientName, 120),
+    const mutableFields = cleanUndefined({
+      clientName: clampReqStr(item.clientName, 120, 'Cliente'),
       clientRole: clampStr(item.clientRole, 120),
-      quote: clampStr(item.quote, 1200),
+      quote: clampReqStr(item.quote, 1200, 'Excelente atendimento.'),
       propertyReference: clampStr(item.propertyReference, 160),
-    } as Record<string, unknown>);
+      status: item.status === 'published' ? 'published' : 'draft',
+    });
 
+    const ref = doc(db, 'testimonials', item.id);
     if (isNew) {
-      await setDoc(doc(db, 'testimonials', item.id), {
-        ...sanitized,
+      await setDoc(ref, {
+        id: item.id,
+        tenantId: item.tenantId,
+        ownerUid: item.ownerUid || auth.currentUser?.uid || '',
+        ...mutableFields,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
-    } else {
-      delete sanitized.id;
-      delete sanitized.tenantId;
-      delete sanitized.ownerUid;
-      delete sanitized.createdAt;
-      await updateDoc(doc(db, 'testimonials', item.id), {
-        ...sanitized,
+      return;
+    }
+
+    const snap = await getDoc(ref);
+    if (!snap.exists()) {
+      await setDoc(ref, {
+        id: item.id,
+        tenantId: item.tenantId,
+        ownerUid: item.ownerUid || auth.currentUser?.uid || '',
+        ...mutableFields,
+        createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
+      return;
     }
+
+    const existing = snap.data() as Testimonial & { createdAt?: unknown };
+    await setDoc(ref, {
+      id: existing.id || item.id,
+      tenantId: existing.tenantId || item.tenantId,
+      ownerUid: existing.ownerUid || item.ownerUid || auth.currentUser?.uid || '',
+      ...mutableFields,
+      createdAt: existing.createdAt ?? serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
   } catch (err) {
     handleFirestoreError(err, isNew ? OperationType.CREATE : OperationType.UPDATE, `testimonials/${item.id}`);
   }
@@ -698,15 +995,30 @@ export async function submitPublicLead(
     throw new Error('Canal de atendimento aguardando ativação pelo corretor responsável.');
   }
   const id = generateSafeId('lead');
+  const validInterests = ['comprar', 'alugar', 'vender', 'investir', 'visita', 'empreendimento', 'informacoes'];
   try {
     await setDoc(doc(db, 'leads', id), {
       ...cleanUndefined({
-        ...lead,
         id,
+        tenantId: lead.tenantId,
+        ownerUid: lead.ownerUid,
+        name: clampReqStr(lead.name, 120, 'Interessado'),
+        phone: clampReqStr(lead.phone, 40, 'Não informado'),
+        email: clampStr(lead.email, 200),
+        interest: validInterests.includes(lead.interest) ? lead.interest : 'informacoes',
+        propertyId: clampStr(lead.propertyId, 128),
+        propertyTitle: clampStr(lead.propertyTitle, 200),
+        developmentId: clampStr(lead.developmentId, 128),
+        landingPageId: clampStr(lead.landingPageId, 128),
+        source: clampStr(lead.source, 100),
+        utmSource: clampStr(lead.utmSource, 100),
+        utmMedium: clampStr(lead.utmMedium, 100),
+        utmCampaign: clampStr(lead.utmCampaign, 100),
+        message: clampStr(lead.message, 2000),
+        lgpdConsent: true,
         status: 'new',
         notes: '',
-        lgpdConsent: true,
-      } as unknown as Record<string, unknown>),
+      }),
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
@@ -720,7 +1032,8 @@ export function subscribeManagedLeads(
   tenantId: string,
   ownerUid: string,
   isAdmin: boolean,
-  onData: (items: Lead[]) => void
+  onData: (items: Lead[]) => void,
+  onError?: (err: Error) => void
 ): Unsubscribe {
   const q = isAdmin
     ? query(collection(db, 'leads'), where('tenantId', '==', tenantId))
@@ -732,15 +1045,44 @@ export function subscribeManagedLeads(
   return onSnapshot(
     q,
     (snap) => onData(snap.docs.map((d) => d.data() as Lead)),
-    (err) => handleFirestoreError(err, OperationType.LIST, 'leads')
+    (err) => reportListenerError(err, OperationType.LIST, 'leads', onError)
   );
 }
 
 export async function updateLeadStatus(leadId: string, status: Lead['status'], notes: string): Promise<void> {
   try {
-    await updateDoc(doc(db, 'leads', leadId), {
-      status,
-      notes: notes.slice(0, 2000),
+    const ref = doc(db, 'leads', leadId);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) {
+      throw new Error('Lead não encontrado.');
+    }
+    const existing = snap.data() as Lead & { createdAt?: unknown };
+    const validInterests = ['comprar', 'alugar', 'vender', 'investir', 'visita', 'empreendimento', 'informacoes'];
+    const validStatuses: Lead['status'][] = ['new', 'in_progress', 'scheduled', 'converted', 'lost'];
+
+    await setDoc(ref, {
+      ...cleanUndefined({
+        id: existing.id || leadId,
+        tenantId: existing.tenantId,
+        ownerUid: existing.ownerUid,
+        name: clampReqStr(existing.name, 120, 'Interessado'),
+        phone: clampReqStr(existing.phone, 40, 'Não informado'),
+        email: clampStr(existing.email, 200),
+        interest: validInterests.includes(existing.interest) ? existing.interest : 'informacoes',
+        propertyId: clampStr(existing.propertyId, 128),
+        propertyTitle: clampStr(existing.propertyTitle, 200),
+        developmentId: clampStr(existing.developmentId, 128),
+        landingPageId: clampStr(existing.landingPageId, 128),
+        source: clampStr(existing.source, 100),
+        utmSource: clampStr(existing.utmSource, 100),
+        utmMedium: clampStr(existing.utmMedium, 100),
+        utmCampaign: clampStr(existing.utmCampaign, 100),
+        message: clampStr(existing.message, 2000),
+        lgpdConsent: Boolean(existing.lgpdConsent),
+        status: validStatuses.includes(status) ? status : existing.status || 'new',
+        notes: clampStr(notes, 2000),
+      }),
+      createdAt: existing.createdAt ?? serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
   } catch (err) {
@@ -764,7 +1106,17 @@ export async function trackPublicEvent(
   const id = generateSafeId('evt');
   try {
     await setDoc(doc(db, 'analyticsEvents', id), {
-      ...cleanUndefined({ ...event, id } as unknown as Record<string, unknown>),
+      ...cleanUndefined({
+        id,
+        tenantId: event.tenantId,
+        ownerUid: event.ownerUid,
+        eventType: event.eventType,
+        targetId: clampStr(event.targetId, 128),
+        path: clampReqStr(event.path, 300, '/'),
+        source: clampStr(event.source, 120),
+        utmSource: clampStr(event.utmSource, 100),
+        utmCampaign: clampStr(event.utmCampaign, 100),
+      }),
       createdAt: serverTimestamp(),
     });
   } catch {
@@ -776,7 +1128,8 @@ export function subscribeManagedAnalytics(
   tenantId: string,
   ownerUid: string,
   isAdmin: boolean,
-  onData: (items: AnalyticsEvent[]) => void
+  onData: (items: AnalyticsEvent[]) => void,
+  onError?: (err: Error) => void
 ): Unsubscribe {
   const q = isAdmin
     ? query(collection(db, 'analyticsEvents'), where('tenantId', '==', tenantId))
@@ -788,7 +1141,7 @@ export function subscribeManagedAnalytics(
   return onSnapshot(
     q,
     (snap) => onData(snap.docs.map((d) => d.data() as AnalyticsEvent)),
-    (err) => handleFirestoreError(err, OperationType.LIST, 'analyticsEvents')
+    (err) => reportListenerError(err, OperationType.LIST, 'analyticsEvents', onError)
   );
 }
 
@@ -797,7 +1150,8 @@ export function subscribeManagedCampaigns(
   tenantId: string,
   ownerUid: string,
   isAdmin: boolean,
-  onData: (items: Campaign[]) => void
+  onData: (items: Campaign[]) => void,
+  onError?: (err: Error) => void
 ): Unsubscribe {
   const q = isAdmin
     ? query(collection(db, 'campaigns'), where('tenantId', '==', tenantId))
@@ -809,31 +1163,68 @@ export function subscribeManagedCampaigns(
   return onSnapshot(
     q,
     (snap) => onData(snap.docs.map((d) => d.data() as Campaign)),
-    (err) => handleFirestoreError(err, OperationType.LIST, 'campaigns')
+    (err) => reportListenerError(err, OperationType.LIST, 'campaigns', onError)
   );
 }
 
 export async function saveCampaign(c: Omit<Campaign, 'createdAt' | 'updatedAt'>, isNew: boolean): Promise<void> {
   try {
+    const validStatuses = ['active', 'paused', 'ended'];
+    const mutableFields = cleanUndefined({
+      name: clampReqStr(c.name, 160, 'Campanha'),
+      channel: clampStr(c.channel, 80),
+      utmSource: clampStr(c.utmSource, 100),
+      utmMedium: clampStr(c.utmMedium, 100),
+      utmCampaign: clampStr(c.utmCampaign, 100),
+      status: validStatuses.includes(c.status) ? c.status : 'active',
+      budget: clampNumber(c.budget, 0),
+    });
+
+    const ref = doc(db, 'campaigns', c.id);
     if (isNew) {
-      await setDoc(doc(db, 'campaigns', c.id), {
-        ...cleanUndefined(c as unknown as Record<string, unknown>),
+      await setDoc(ref, {
+        id: c.id,
+        tenantId: c.tenantId,
+        ownerUid: c.ownerUid || auth.currentUser?.uid || '',
+        ...mutableFields,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
-    } else {
-      const payload = cleanUndefined(c as unknown as Record<string, unknown>);
-      delete payload.id;
-      delete payload.tenantId;
-      delete payload.ownerUid;
-      delete payload.createdAt;
-      await updateDoc(doc(db, 'campaigns', c.id), {
-        ...payload,
+      return;
+    }
+
+    const snap = await getDoc(ref);
+    if (!snap.exists()) {
+      await setDoc(ref, {
+        id: c.id,
+        tenantId: c.tenantId,
+        ownerUid: c.ownerUid || auth.currentUser?.uid || '',
+        ...mutableFields,
+        createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
+      return;
     }
+
+    const existing = snap.data() as Campaign & { createdAt?: unknown };
+    await setDoc(ref, {
+      id: existing.id || c.id,
+      tenantId: existing.tenantId || c.tenantId,
+      ownerUid: existing.ownerUid || c.ownerUid || auth.currentUser?.uid || '',
+      ...mutableFields,
+      createdAt: existing.createdAt ?? serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
   } catch (err) {
     handleFirestoreError(err, isNew ? OperationType.CREATE : OperationType.UPDATE, `campaigns/${c.id}`);
+  }
+}
+
+export async function deleteCampaign(id: string): Promise<void> {
+  try {
+    await deleteDoc(doc(db, 'campaigns', id));
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, `campaigns/${id}`);
   }
 }
 
@@ -842,7 +1233,8 @@ export function subscribeManagedAiJobs(
   tenantId: string,
   ownerUid: string,
   isAdmin: boolean,
-  onData: (items: AiJob[]) => void
+  onData: (items: AiJob[]) => void,
+  onError?: (err: Error) => void
 ): Unsubscribe {
   const q = isAdmin
     ? query(collection(db, 'aiJobs'), where('tenantId', '==', tenantId))
@@ -854,14 +1246,29 @@ export function subscribeManagedAiJobs(
   return onSnapshot(
     q,
     (snap) => onData(snap.docs.map((d) => d.data() as AiJob)),
-    (err) => handleFirestoreError(err, OperationType.LIST, 'aiJobs')
+    (err) => reportListenerError(err, OperationType.LIST, 'aiJobs', onError)
   );
 }
 
 export async function saveAiJob(job: Omit<AiJob, 'createdAt' | 'updatedAt'>): Promise<void> {
   try {
+    const dur = Math.min(120, Math.max(1, Number(job.durationSec) || 1));
     await setDoc(doc(db, 'aiJobs', job.id), {
-      ...cleanUndefined(job as unknown as Record<string, unknown>),
+      ...cleanUndefined({
+        id: job.id,
+        tenantId: job.tenantId,
+        ownerUid: job.ownerUid || auth.currentUser?.uid || '',
+        propertyId: clampStr(job.propertyId, 128),
+        jobType: job.jobType,
+        provider: clampStr(job.provider, 60),
+        style: clampStr(job.style, 80),
+        durationSec: dur,
+        aspectRatio: job.aspectRatio === '9:16' ? '9:16' : '16:9',
+        status: job.status,
+        inputImageUrls: clampStrArray(job.inputImageUrls, 20, 1000),
+        outputUrl: clampStr(job.outputUrl, 1000),
+        errorMessage: clampStr(job.errorMessage, 500),
+      }),
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
@@ -875,7 +1282,8 @@ export function subscribeAuditLogs(
   tenantId: string,
   ownerUid: string,
   isAdmin: boolean,
-  onData: (items: AuditLog[]) => void
+  onData: (items: AuditLog[]) => void,
+  onError?: (err: Error) => void
 ): Unsubscribe {
   const q = isAdmin
     ? query(collection(db, 'auditLogs'), where('tenantId', '==', tenantId))
@@ -887,7 +1295,7 @@ export function subscribeAuditLogs(
   return onSnapshot(
     q,
     (snap) => onData(snap.docs.map((d) => d.data() as AuditLog)),
-    (err) => handleFirestoreError(err, OperationType.LIST, 'auditLogs')
+    (err) => reportListenerError(err, OperationType.LIST, 'auditLogs', onError)
   );
 }
 
@@ -895,7 +1303,17 @@ export async function writeAuditLog(log: Omit<AuditLog, 'id' | 'createdAt'>): Pr
   const id = generateSafeId('audit');
   try {
     await setDoc(doc(db, 'auditLogs', id), {
-      ...cleanUndefined({ ...log, id } as unknown as Record<string, unknown>),
+      ...cleanUndefined({
+        id,
+        tenantId: log.tenantId,
+        ownerUid: log.ownerUid || auth.currentUser?.uid || '',
+        actorUid: log.actorUid || auth.currentUser?.uid || '',
+        actorEmail: clampStr(log.actorEmail, 200),
+        action: clampReqStr(log.action, 80, 'admin_action'),
+        entityType: clampReqStr(log.entityType, 60, 'system'),
+        entityId: clampStr(log.entityId, 128),
+        summary: clampReqStr(log.summary, 400, 'Ação administrativa registrada'),
+      }),
       createdAt: serverTimestamp(),
     });
   } catch (err) {

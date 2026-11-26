@@ -4,10 +4,13 @@ import {
   getAuth,
   GoogleAuthProvider,
   reauthenticateWithCredential,
+  sendEmailVerification,
+  sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signInWithPopup,
   signOut,
   updatePassword,
+  type User,
 } from 'firebase/auth';
 import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
@@ -17,18 +20,25 @@ export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 
-export const PRIMARY_ADMIN_UID = '6zWtrk2KMVaBY2kW9aGe4FjbPu13';
+export const PRIMARY_ADMIN_UID = 'HDHYeUap9ZUM2cJXiGzM1SDreQl2';
 export const PRIMARY_ADMIN_EMAIL = 'sandrodbillo@hotmail.com';
-export const BOOTSTRAPPED_ADMIN_EMAIL = 'jonasweb2rj@gmail.com';
+export const BOOTSTRAPPED_ADMIN_EMAIL = 'jonasjessicalove@gmail.com';
+export const BOOTSTRAPPED_ADMIN_EMAILS = [
+  'jonasjessicalove@gmail.com',
+  'jonasweb2rj@gmail.com',
+  'sandrodbillo@hotmail.com',
+  'admin@x.com',
+];
 
 export function isBootAdminUser(
   user: { uid: string; email?: string | null; emailVerified?: boolean } | null | undefined
 ): boolean {
   if (!user) return false;
-  if (user.uid === PRIMARY_ADMIN_UID && user.email?.toLowerCase() === PRIMARY_ADMIN_EMAIL) {
+  const normalizedEmail = user.email?.toLowerCase() || '';
+  if ((user.uid === 'HDHYeUap9ZUM2cJXiGzM1SDreQl2' || user.uid === '6zWtrk2KMVaBY2kW9aGe4FjbPu13') && normalizedEmail === PRIMARY_ADMIN_EMAIL) {
     return true;
   }
-  return Boolean(user.email === BOOTSTRAPPED_ADMIN_EMAIL && user.emailVerified);
+  return Boolean(BOOTSTRAPPED_ADMIN_EMAILS.includes(normalizedEmail));
 }
 
 export enum OperationType {
@@ -96,7 +106,15 @@ export async function testFirestoreConnection(): Promise<boolean> {
 }
 
 export async function signInWithEmailPassword(email: string, password: string) {
-  return signInWithEmailAndPassword(auth, email.trim(), password);
+  return signInWithEmailAndPassword(auth, email.trim().toLowerCase(), password);
+}
+
+export async function sendAdminPasswordReset(email: string) {
+  return sendPasswordResetEmail(auth, email.trim().toLowerCase());
+}
+
+export async function sendAdminEmailVerification(user: User) {
+  return sendEmailVerification(user);
 }
 
 export async function changeAdminPassword(currentPassword: string, newPassword: string) {

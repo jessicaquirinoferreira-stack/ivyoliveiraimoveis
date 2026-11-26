@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { motion } from 'motion/react';
 import { CheckCircle2, Send } from 'lucide-react';
 import { useAppContext } from '../../hooks/useAuthTenant';
 import { submitPublicLead, trackPublicEvent } from '../../firebase/firestoreService';
@@ -106,10 +107,15 @@ export function LeadCaptureForm({
 
   if (submitted) {
     return (
-      <div className="p-8 bg-[var(--site-surface)] border border-[var(--site-border)] rounded-[var(--site-radius)] space-y-4">
+      <motion.div
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
+        className="p-8 sm:p-10 bg-[var(--site-surface)] border border-[var(--site-border)] rounded-[var(--site-radius)] shadow-[0_20px_50px_-28px_rgba(20,20,19,0.16)] space-y-4"
+      >
         <div className="flex items-center gap-3 text-[var(--site-accent)]">
           <CheckCircle2 className="w-6 h-6" />
-          <h3 className="font-editorial text-2xl font-semibold text-[var(--site-text)]">
+          <h3 className="font-editorial text-3xl font-semibold text-[var(--site-text)]">
             Solicitação recebida
           </h3>
         </div>
@@ -119,32 +125,37 @@ export function LeadCaptureForm({
         <button
           type="button"
           onClick={() => setSubmitted(false)}
-          className="text-xs font-medium underline underline-offset-4 text-[var(--site-text)]"
+          className="editorial-link text-xs font-medium text-[var(--site-text)] cursor-pointer"
         >
           Enviar outra mensagem
         </button>
-      </div>
+      </motion.div>
     );
   }
 
   return (
     <form
       onSubmit={handleSubmit}
-      className="p-6 sm:p-8 bg-[var(--site-surface)] border border-[var(--site-border)] rounded-[var(--site-radius)] space-y-5"
+      className="p-6 sm:p-9 bg-[var(--site-surface)] border border-[var(--site-border)] rounded-[var(--site-radius)] shadow-[0_20px_50px_-28px_rgba(20,20,19,0.16)] space-y-5"
     >
-      <div className="space-y-1.5">
-        <h3 className="font-editorial text-2xl font-semibold text-[var(--site-text)]">{title}</h3>
-        <p className="text-sm text-[var(--site-text-muted)]">{subtitle}</p>
+      <div className="space-y-1.5 pb-2 border-b border-[var(--site-border)]">
+        <h3 className="font-editorial text-2xl sm:text-3xl font-semibold text-[var(--site-text)]">
+          {title}
+        </h3>
+        <p className="text-sm text-[var(--site-text-muted)] leading-relaxed">{subtitle}</p>
       </div>
 
       {error && (
-        <div className="p-3 text-xs bg-red-50 border border-red-200 text-red-800 rounded-[var(--site-radius)]">
+        <div
+          role="alert"
+          className="p-3.5 text-xs bg-red-50 border border-red-200 text-red-800 rounded-[var(--site-radius)]"
+        >
           {error}
         </div>
       )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <label className="block space-y-1.5 text-xs font-medium text-[var(--site-text-muted)]">
+        <label className="block space-y-1.5 text-[11px] font-mono uppercase tracking-[0.09em] text-[var(--site-text-muted)]">
           <span>Nome completo *</span>
           <input
             type="text"
@@ -153,11 +164,11 @@ export function LeadCaptureForm({
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="Seu nome"
-            className="w-full px-3.5 py-2.5 text-sm bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)] focus:outline-none focus:border-[var(--site-accent)]"
+            className="w-full px-3.5 py-2.5 text-sm font-sans normal-case tracking-normal bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)] focus:outline-none focus:border-[var(--site-accent)] transition-colors"
           />
         </label>
 
-        <label className="block space-y-1.5 text-xs font-medium text-[var(--site-text-muted)]">
+        <label className="block space-y-1.5 text-[11px] font-mono uppercase tracking-[0.09em] text-[var(--site-text-muted)]">
           <span>Telefone / WhatsApp *</span>
           <input
             type="tel"
@@ -166,13 +177,13 @@ export function LeadCaptureForm({
             value={phone}
             onChange={(e) => setPhone(e.target.value)}
             placeholder="(21) 99999-9999"
-            className="w-full px-3.5 py-2.5 text-sm bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)] focus:outline-none focus:border-[var(--site-accent)]"
+            className="w-full px-3.5 py-2.5 text-sm font-sans normal-case tracking-normal bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)] focus:outline-none focus:border-[var(--site-accent)] transition-colors"
           />
         </label>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <label className="block space-y-1.5 text-xs font-medium text-[var(--site-text-muted)]">
+        <label className="block space-y-1.5 text-[11px] font-mono uppercase tracking-[0.09em] text-[var(--site-text-muted)]">
           <span>E-mail</span>
           <input
             type="email"
@@ -180,16 +191,16 @@ export function LeadCaptureForm({
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             placeholder="voce@exemplo.com"
-            className="w-full px-3.5 py-2.5 text-sm bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)] focus:outline-none focus:border-[var(--site-accent)]"
+            className="w-full px-3.5 py-2.5 text-sm font-sans normal-case tracking-normal bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)] focus:outline-none focus:border-[var(--site-accent)] transition-colors"
           />
         </label>
 
-        <label className="block space-y-1.5 text-xs font-medium text-[var(--site-text-muted)]">
+        <label className="block space-y-1.5 text-[11px] font-mono uppercase tracking-[0.09em] text-[var(--site-text-muted)]">
           <span>Interesse</span>
           <select
             value={interest}
             onChange={(e) => setInterest(e.target.value as LeadInterest)}
-            className="w-full px-3.5 py-2.5 text-sm bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)] focus:outline-none focus:border-[var(--site-accent)]"
+            className="w-full px-3.5 py-2.5 text-sm font-sans normal-case tracking-normal bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)] focus:outline-none focus:border-[var(--site-accent)] transition-colors"
           >
             <option value="comprar">Comprar imóvel</option>
             <option value="alugar">Alugar imóvel</option>
@@ -202,7 +213,7 @@ export function LeadCaptureForm({
         </label>
       </div>
 
-      <label className="block space-y-1.5 text-xs font-medium text-[var(--site-text-muted)]">
+      <label className="block space-y-1.5 text-[11px] font-mono uppercase tracking-[0.09em] text-[var(--site-text-muted)]">
         <span>Mensagem</span>
         <textarea
           rows={3}
@@ -210,7 +221,7 @@ export function LeadCaptureForm({
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           placeholder="Conte o que procura (região, perfil do imóvel ou melhor horário para contato)..."
-          className="w-full px-3.5 py-2.5 text-sm bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)] focus:outline-none focus:border-[var(--site-accent)]"
+          className="w-full px-3.5 py-2.5 text-sm font-sans normal-case tracking-normal bg-[var(--site-bg)] text-[var(--site-text)] border border-[var(--site-border)] rounded-[var(--site-radius)] focus:outline-none focus:border-[var(--site-accent)] transition-colors"
         />
       </label>
 
@@ -229,7 +240,7 @@ export function LeadCaptureForm({
       <button
         type="submit"
         disabled={submitting}
-        className="w-full inline-flex items-center justify-center gap-2 px-6 py-3 text-sm font-medium bg-[var(--site-text)] text-[var(--site-surface)] rounded-[var(--site-radius)] hover:opacity-90 disabled:opacity-50 transition-opacity"
+        className="w-full inline-flex items-center justify-center gap-2 px-6 py-3.5 text-sm font-medium bg-[var(--site-text)] text-[var(--site-surface)] rounded-[var(--site-radius)] hover:bg-[var(--site-accent)] hover:text-white disabled:opacity-50 transition-colors duration-300 cursor-pointer"
       >
         <Send className="w-4 h-4" />
         {submitting ? 'Enviando...' : ctaLabel}

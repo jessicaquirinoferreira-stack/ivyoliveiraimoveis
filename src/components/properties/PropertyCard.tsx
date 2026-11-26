@@ -1,4 +1,4 @@
-import { ArrowUpRight, Building2, MessageCircle } from 'lucide-react';
+import { ArrowUpRight, Building2, Compass, MessageCircle } from 'lucide-react';
 import { Property } from '../../types/realestate';
 import {
   buildWhatsAppUrl,
@@ -17,17 +17,18 @@ interface PropertyCardProps {
 export function PropertyCard({ property, onOpen }: PropertyCardProps) {
   const { tenant } = useAppContext();
   const cover = property.coverImage || property.images?.[0]?.url || '';
+  const has360 = (property.panorama360Images?.length || 0) > 0;
   const whatsappUrl = buildWhatsAppUrl(
     tenant.whatsapp,
     `Olá! Tenho interesse no imóvel ${property.title}, código ${property.code}. Gostaria de receber mais informações.`
   );
 
   return (
-    <article className="group bg-[var(--site-surface)] border border-[var(--site-border)] rounded-[var(--site-radius)] overflow-hidden transition-shadow duration-300 hover:shadow-lg flex flex-col">
+    <article className="group bg-[var(--site-surface)] border border-[var(--site-border)] rounded-[var(--site-radius)] overflow-hidden transition-all duration-500 ease-out hover:-translate-y-1 hover:border-[var(--site-accent)]/50 hover:shadow-[0_24px_48px_-24px_rgba(20,20,19,0.22)] flex flex-col">
       <button
         type="button"
         onClick={() => onOpen(property.slug)}
-        className="relative aspect-[4/3] w-full overflow-hidden bg-[var(--site-surface-alt)] text-left focus-visible:outline-2 focus-visible:outline-[var(--site-accent)]"
+        className="relative aspect-[4/3] w-full overflow-hidden bg-[var(--site-surface-alt)] text-left focus-visible:outline-2 focus-visible:outline-[var(--site-accent)] cursor-pointer"
       >
         {cover ? (
           <img
@@ -35,22 +36,33 @@ export function PropertyCard({ property, onOpen }: PropertyCardProps) {
             alt={property.title}
             loading="lazy"
             referrerPolicy="no-referrer"
-            className="w-full h-full object-cover transition-transform duration-700 ease-out group-hover:scale-105"
+            className="w-full h-full object-cover transition-transform duration-700 ease-out will-change-transform group-hover:scale-[1.06]"
           />
         ) : (
           <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-[var(--site-text-muted)]">
-            <Building2 className="w-8 h-8 opacity-50" />
+            <Building2 className="w-8 h-8 opacity-45" />
             <span className="text-xs">{property.title}</span>
           </div>
         )}
-        <div className="absolute inset-0 bg-gradient-to-t from-black/45 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+
+        {/* Measured editorial hover scrim + architectural cue */}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+        <div className="absolute bottom-3.5 left-4 right-4 flex items-center justify-between text-[11px] font-medium tracking-wide text-white translate-y-2 opacity-0 group-hover:translate-y-0 group-hover:opacity-100 transition-all duration-400">
+          <span className="inline-flex items-center gap-1.5">
+            {has360 && <Compass className="w-3.5 h-3.5" />}
+            {has360 ? 'Tour 360° disponível' : 'Explorar imóvel'}
+          </span>
+          <ArrowUpRight className="w-4 h-4" />
+        </div>
       </button>
 
       <div className="p-6 flex-1 flex flex-col justify-between gap-5">
         <div className="space-y-2.5">
           {/* Zero-Pill Metadata Discipline */}
-          <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--site-text-muted)]">
-            <span>{transactionTypeLabel(property.transactionType)}</span>
+          <div className="flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-[0.09em] text-[var(--site-text-muted)]">
+            <span className="text-[var(--site-accent)] font-medium">
+              {transactionTypeLabel(property.transactionType)}
+            </span>
             <span aria-hidden="true">·</span>
             <span>{propertyTypeLabel(property.propertyType)}</span>
             <span aria-hidden="true">·</span>
@@ -64,7 +76,7 @@ export function PropertyCard({ property, onOpen }: PropertyCardProps) {
                 e.preventDefault();
                 onOpen(property.slug);
               }}
-              className="hover:text-[var(--site-accent)] transition-colors"
+              className="hover:text-[var(--site-accent)] transition-colors duration-200"
             >
               {property.title}
             </a>
@@ -86,7 +98,7 @@ export function PropertyCard({ property, onOpen }: PropertyCardProps) {
           </div>
 
           <div className="flex items-center justify-between gap-3 pt-1">
-            <p className="font-mono text-base font-medium tabular-nums text-[var(--site-text)]">
+            <p className="font-mono text-base font-semibold tabular-nums text-[var(--site-text)]">
               {formatCurrencyBRL(property.price)}
             </p>
 
@@ -117,10 +129,10 @@ export function PropertyCard({ property, onOpen }: PropertyCardProps) {
               <button
                 type="button"
                 onClick={() => onOpen(property.slug)}
-                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-medium bg-[var(--site-text)] text-[var(--site-surface)] rounded-[var(--site-radius)] hover:opacity-90 transition-opacity whitespace-nowrap"
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-medium bg-[var(--site-text)] text-[var(--site-surface)] rounded-[var(--site-radius)] group-hover:bg-[var(--site-accent)] group-hover:text-white transition-colors duration-300 whitespace-nowrap cursor-pointer"
               >
                 Detalhes
-                <ArrowUpRight className="w-3.5 h-3.5" />
+                <ArrowUpRight className="w-3.5 h-3.5 transition-transform duration-300 group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
               </button>
             </div>
           </div>

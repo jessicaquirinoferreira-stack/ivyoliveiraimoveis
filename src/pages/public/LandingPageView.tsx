@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Check, MessageCircle } from 'lucide-react';
+import { ArrowRight, Check, MessageCircle } from 'lucide-react';
 import { useAppContext } from '../../hooks/useAuthTenant';
 import {
   subscribePublishedLandingPages,
@@ -8,6 +8,7 @@ import {
 } from '../../firebase/firestoreService';
 import { LandingPage, Property } from '../../types/realestate';
 import { LeadCaptureForm } from '../../components/leads/LeadCaptureForm';
+import { EditorialReveal, MagneticAction } from '../../components/motion/EditorialMotion';
 import { buildWhatsAppUrl, formatCurrencyBRL } from '../../utils/formatters';
 import { applySeoMetadata } from '../../utils/seo';
 
@@ -69,7 +70,7 @@ export function LandingPageView({ slug, onNavigate }: LandingPageViewProps) {
 
   if (!page) {
     return (
-      <div className="max-w-3xl mx-auto px-6 py-24 text-center space-y-5">
+      <div className="max-w-3xl mx-auto px-6 py-28 text-center space-y-5">
         <h1 className="font-editorial text-4xl font-semibold">Página não encontrada</h1>
         <p className="text-sm text-[var(--site-text-muted)]">
           Esta página de oferta não está publicada ou foi encerrada.
@@ -77,7 +78,7 @@ export function LandingPageView({ slug, onNavigate }: LandingPageViewProps) {
         <button
           type="button"
           onClick={() => onNavigate('/imoveis')}
-          className="px-6 py-3 text-sm font-medium bg-[var(--site-text)] text-[var(--site-surface)] rounded-[var(--site-radius)]"
+          className="px-6 py-3 text-sm font-medium bg-[var(--site-text)] text-[var(--site-surface)] rounded-[var(--site-radius)] cursor-pointer"
         >
           Ver catálogo de imóveis
         </button>
@@ -96,22 +97,22 @@ export function LandingPageView({ slug, onNavigate }: LandingPageViewProps) {
   );
 
   return (
-    <div className="pb-20">
-      {/* Commercial Hero */}
-      <section className="relative min-h-[70vh] flex items-end bg-neutral-950 text-white overflow-hidden">
+    <div className="pb-24">
+      {/* Commercial Editorial Hero */}
+      <section className="relative min-h-[74vh] flex items-end bg-neutral-950 text-white overflow-hidden">
         <img
           src={heroImg}
           alt={page.title}
           referrerPolicy="no-referrer"
           className="absolute inset-0 w-full h-full object-cover"
         />
-        <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/45 to-black/25" />
+        <div className="absolute inset-0 bg-gradient-to-t from-black/88 via-black/48 to-black/28" />
 
-        <div className="relative z-10 max-w-6xl mx-auto w-full px-6 py-16 space-y-5">
-          <p className="text-xs font-medium tracking-wider text-white/75">
+        <div className="relative z-10 max-w-6xl mx-auto w-full px-6 py-20 space-y-6">
+          <p className="text-[11px] font-mono uppercase tracking-[0.2em] text-white/80">
             {tenant.brandName} · Apresentação Exclusiva
           </p>
-          <h1 className="font-editorial text-4xl sm:text-6xl font-semibold max-w-4xl text-balance">
+          <h1 className="font-editorial text-[clamp(2.35rem,5vw,4.5rem)] font-semibold leading-[1.05] max-w-4xl text-balance">
             {page.title}
           </h1>
           {page.subtitle && (
@@ -120,19 +121,22 @@ export function LandingPageView({ slug, onNavigate }: LandingPageViewProps) {
             </p>
           )}
           <div className="pt-3 flex flex-wrap gap-4">
-            <a
-              href="#lp-formulario"
-              style={{ backgroundColor: page.accentColor || 'var(--site-accent)' }}
-              className="px-6 py-3.5 text-sm font-medium text-white rounded-[var(--site-radius)] hover:opacity-90"
-            >
-              {page.ctaText || 'Solicitar Apresentação Completa'}
-            </a>
+            <MagneticAction>
+              <a
+                href="#lp-formulario"
+                style={{ backgroundColor: page.accentColor || 'var(--site-accent)' }}
+                className="inline-flex items-center gap-2 px-7 py-4 text-sm font-medium text-white rounded-[var(--site-radius)] hover:opacity-90 transition-opacity"
+              >
+                <span>{page.ctaText || 'Solicitar Apresentação Completa'}</span>
+                <ArrowRight className="w-4 h-4" />
+              </a>
+            </MagneticAction>
             {whatsappUrl && (
               <a
                 href={whatsappUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-2 px-6 py-3.5 text-sm font-medium border border-white/40 text-white rounded-[var(--site-radius)] hover:bg-white/10"
+                className="inline-flex items-center gap-2 px-6 py-4 text-sm font-medium border border-white/40 text-white rounded-[var(--site-radius)] hover:bg-white/12 transition-colors"
               >
                 <MessageCircle className="w-4 h-4" />
                 Atendimento via WhatsApp
@@ -144,53 +148,71 @@ export function LandingPageView({ slug, onNavigate }: LandingPageViewProps) {
 
       {/* Content & Conversion */}
       <section className="max-w-6xl mx-auto px-6 pt-16 grid grid-cols-1 lg:grid-cols-12 gap-12 items-start">
-        <div className="lg:col-span-7 space-y-8">
+        <div className="lg:col-span-7 space-y-10">
           {linkedProperty && (
-            <div className="p-6 bg-[var(--site-surface)] border border-[var(--site-border)] rounded-[var(--site-radius)] grid grid-cols-2 sm:grid-cols-4 gap-4">
-              <div>
-                <p className="text-xs text-[var(--site-text-muted)]">Valor</p>
-                <p className="font-mono font-semibold tabular-nums">
-                  {formatCurrencyBRL(linkedProperty.price)}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-[var(--site-text-muted)]">Área</p>
-                <p className="font-mono font-semibold tabular-nums">{linkedProperty.builtArea} m²</p>
-              </div>
-              <div>
-                <p className="text-xs text-[var(--site-text-muted)]">Quartos</p>
-                <p className="font-mono font-semibold tabular-nums">{linkedProperty.bedrooms}</p>
-              </div>
-              <div>
-                <p className="text-xs text-[var(--site-text-muted)]">Vagas</p>
-                <p className="font-mono font-semibold tabular-nums">{linkedProperty.parkingSpaces}</p>
-              </div>
-            </div>
+            <EditorialReveal>
+              <dl className="p-6 sm:p-7 bg-[var(--site-surface)] border border-[var(--site-border)] rounded-[var(--site-radius)] grid grid-cols-2 sm:grid-cols-4 gap-5">
+                <div className="space-y-1">
+                  <dt className="text-[11px] font-mono uppercase tracking-[0.1em] text-[var(--site-text-muted)]">
+                    Valor
+                  </dt>
+                  <dd className="font-mono font-semibold tabular-nums">
+                    {formatCurrencyBRL(linkedProperty.price)}
+                  </dd>
+                </div>
+                <div className="space-y-1">
+                  <dt className="text-[11px] font-mono uppercase tracking-[0.1em] text-[var(--site-text-muted)]">
+                    Área
+                  </dt>
+                  <dd className="font-mono font-semibold tabular-nums">
+                    {linkedProperty.builtArea} m²
+                  </dd>
+                </div>
+                <div className="space-y-1">
+                  <dt className="text-[11px] font-mono uppercase tracking-[0.1em] text-[var(--site-text-muted)]">
+                    Quartos
+                  </dt>
+                  <dd className="font-mono font-semibold tabular-nums">
+                    {linkedProperty.bedrooms}
+                  </dd>
+                </div>
+                <div className="space-y-1">
+                  <dt className="text-[11px] font-mono uppercase tracking-[0.1em] text-[var(--site-text-muted)]">
+                    Vagas
+                  </dt>
+                  <dd className="font-mono font-semibold tabular-nums">
+                    {linkedProperty.parkingSpaces}
+                  </dd>
+                </div>
+              </dl>
+            </EditorialReveal>
           )}
 
-          <div className="space-y-4">
-            <h2 className="font-editorial text-3xl font-semibold">Detalhes da Oportunidade</h2>
-            <p className="text-sm sm:text-base text-[var(--site-text-muted)] leading-relaxed whitespace-pre-line">
+          <EditorialReveal className="space-y-4">
+            <h2 className="font-editorial text-3xl sm:text-4xl font-semibold">
+              Detalhes da Oportunidade
+            </h2>
+            <p className="text-sm sm:text-base text-[var(--site-text-muted)] leading-relaxed whitespace-pre-line max-w-prose">
               {page.description}
             </p>
-          </div>
+          </EditorialReveal>
 
           {page.highlights?.length > 0 && (
-            <div className="space-y-3 pt-4 border-t border-[var(--site-border)]">
-              <h3 className="font-editorial text-2xl font-semibold">Destaques</h3>
-              <ul className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+            <EditorialReveal className="space-y-4 pt-6 border-t border-[var(--site-border)]">
+              <h3 className="font-editorial text-2xl sm:text-3xl font-semibold">Destaques</h3>
+              <ul className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-sm">
                 {page.highlights.map((item, idx) => (
-                  <li key={idx} className="flex items-center gap-2">
+                  <li key={idx} className="flex items-center gap-2.5">
                     <Check className="w-4 h-4 text-[var(--site-accent)] shrink-0" />
                     <span>{item}</span>
                   </li>
                 ))}
               </ul>
-            </div>
+            </EditorialReveal>
           )}
         </div>
 
-        <div id="lp-formulario" className="lg:col-span-5">
+        <div id="lp-formulario" className="lg:col-span-5 lg:sticky lg:top-28">
           <LeadCaptureForm
             defaultInterest="informacoes"
             propertyId={page.propertyId}

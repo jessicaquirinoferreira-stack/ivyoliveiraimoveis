@@ -44,6 +44,23 @@ import { VirtualTourModal } from '../../components/virtual-tour/VirtualTourModal
 interface PropertyEditorModalProps {
   existingProperty?: Property | null;
   onClose: () => void;
+  onSaved?: (message: string) => void;
+}
+
+function formatReadableError(err: unknown, fallback: string): string {
+  if (!(err instanceof Error)) return fallback;
+  try {
+    const parsed = JSON.parse(err.message) as { error?: string; path?: string };
+    if (parsed?.error) {
+      if (parsed.error.toLowerCase().includes('permission')) {
+        return `Permissão negada ao gravar em ${parsed.path || 'Firestore'}. Confirme sua sessão administrativa e tente novamente.`;
+      }
+      return parsed.error;
+    }
+  } catch {
+    // Plain error message
+  }
+  return err.message || fallback;
 }
 
 const ROOM_OPTIONS = [
@@ -72,7 +89,7 @@ const VIDEO_STYLES: CinematicStyle[] = [
   'Lançamento imobiliário',
 ];
 
-export function PropertyEditorModal({ existingProperty, onClose }: PropertyEditorModalProps) {
+export function PropertyEditorModal({ existingProperty, onClose, onSaved }: PropertyEditorModalProps) {
   const { user, activeTenantId, tenant } = useAppContext();
   const isNew = !existingProperty;
 
@@ -138,7 +155,7 @@ export function PropertyEditorModal({ existingProperty, onClose }: PropertyEdito
   const [feedback, setFeedback] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const propertyId = existingProperty?.id || generateSafeId('prop');
+  const [propertyId] = useState(() => existingProperty?.id || generateSafeId('prop'));
 
   useEffect(() => {
     fetch('/api/health')
@@ -614,7 +631,7 @@ export function PropertyEditorModal({ existingProperty, onClose }: PropertyEdito
     setError(null);
     try {
       const primary = images.find((i) => i.isPrimary) || images[0];
-      const slug = existingProperty?.slug || `${slugify(title)}-${code.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
+      const slug = existingProperty?.slug || slugify(`${title}-${code}`);
       const effectiveTourType: VirtualTourType =
         virtualTourType === 'panorama360' && panorama360Images.length === 0 ? 'photo' : virtualTourType;
 
@@ -669,10 +686,15 @@ export function PropertyEditorModal({ existingProperty, onClose }: PropertyEdito
         entityType: 'property',
         entityId: propertyId,
         summary: `${isNew ? 'Criou' : 'Atualizou'} imóvel "${title}" (${targetStatus})`,
-      });
+      }).catch(() => {});
+      onSaved?.(
+        targetStatus === 'published'
+          ? `Imóvel "${title.trim()}" salvo e publicado no site em tempo real!`
+          : `Imóvel "${title.trim()}" salvo permanentemente (${targetStatus}).`
+      );
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Erro ao salvar imóvel no Firestore.');
+      setError(formatReadableError(err, 'Erro ao salvar imóvel no Firestore.'));
     } finally {
       setSaving(false);
     }
@@ -1459,6 +1481,33 @@ export function PropertyEditorModal({ existingProperty, onClose }: PropertyEdito
                   />
                 </label>
               </div>
+
+              {videos.length > 0 && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+                  {videos.map((vid, idx) => (
+                    <div
+                      key={vid.id}
+                      className="p-2.5 border border-[var(--site-border)] rounded bg-[var(--site-surface)] space-y-2"
+                    >
+                      <video src={vid.url} controls className="w-full max-h-40 rounded bg-black" />
+                      <div className="flex items-center justify-between gap-2 text-xs">
+                        <span className="truncate font-medium">{vid.title || `Vídeo ${idx + 1}`}</span>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            await deleteMediaOnServer(activeTenantId, vid.url).catch(() => {});
+                            setVideos((prev) => prev.filter((item) => item.id !== vid.id));
+                          }}
+                          className="inline-flex items-center gap-1 px-2 py-1 text-[11px] border border-red-200 text-red-700 rounded hover:bg-red-50 shrink-0"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          Remover
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </section>
         </div>

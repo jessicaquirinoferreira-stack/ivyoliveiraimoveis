@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import React, { useEffect } from 'react';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { AppProvider, useAppContext } from './hooks/useAuthTenant';
 import { useRouter } from './hooks/useRouter';
@@ -22,6 +23,12 @@ function AppRoutes() {
   const { user, authReady } = useAppContext();
 
   const normalized = pathname.replace(/\/+$/, '') || '/';
+
+  useEffect(() => {
+    if (authReady && user && normalized === '/login') {
+      navigate('/admin');
+    }
+  }, [authReady, user, normalized, navigate]);
 
   // Protected Admin & Login Routes (strictly separated from public site navigation)
   if (normalized === '/admin' || normalized.startsWith('/admin/') || normalized === '/login') {

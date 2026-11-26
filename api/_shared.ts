@@ -7,7 +7,7 @@ import { GoogleGenAI, Type } from '@google/genai';
 import { put, del } from '@vercel/blob';
 import { handleUpload, type HandleUploadBody } from '@vercel/blob/client';
 
-export const PRIMARY_ADMIN_UID = '6zWtrk2KMVaBY2kW9aGe4FjbPu13';
+export const PRIMARY_ADMIN_UID = 'HDHYeUap9ZUM2cJXiGzM1SDreQl2';
 export const PRIMARY_ADMIN_EMAIL = 'sandrodbillo@hotmail.com';
 
 export interface FirebaseClientPublicConfig {
@@ -118,7 +118,7 @@ export interface VerifiedUser {
 
 export function isAuthorizedApiUser(user: VerifiedUser | null): user is VerifiedUser {
   if (!user) return false;
-  if (user.uid === PRIMARY_ADMIN_UID && user.email === PRIMARY_ADMIN_EMAIL) {
+  if ((user.uid === PRIMARY_ADMIN_UID || user.uid === '6zWtrk2KMVaBY2kW9aGe4FjbPu13') && user.email.toLowerCase() === PRIMARY_ADMIN_EMAIL) {
     return true;
   }
   return Boolean(user.emailVerified);

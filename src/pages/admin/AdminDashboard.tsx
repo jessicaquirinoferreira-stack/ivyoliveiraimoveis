@@ -1,6 +1,10 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
   BarChart3,
   Building2,
   Check,
@@ -16,6 +20,7 @@ import {
   LogOut,
   MessageSquareQuote,
   Palette,
+  Pencil,
   Plus,
   Search,
   Shield,
@@ -36,16 +41,15 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { useAppContext } from '../../hooks/useAuthTenant';
-import { db } from '../../firebase/config';
 import {
+  createTenantDocument,
+  deleteCampaign,
   deleteDevelopment,
   deleteLandingPage,
   deleteLead,
   deleteProperty,
   deleteTestimonial,
-  listTenants,
   saveCampaign,
   saveDevelopment,
   saveLandingPage,
@@ -58,6 +62,7 @@ import {
   subscribeManagedLandingPages,
   subscribeManagedLeads,
   subscribeManagedProperties,
+  subscribeManagedTenants,
   subscribeManagedTestimonials,
   updateLeadStatus,
   updateTenantSettings,
@@ -78,7 +83,7 @@ import {
   ThemeConfig,
   ThemePresetId,
 } from '../../types/realestate';
-import { THEME_PRESETS } from '../../config/themes';
+import { applyThemeToDocument, THEME_PRESETS } from '../../config/themes';
 import { DEFAULT_TENANT } from '../../config/defaultTenant';
 import {
   formatCurrencyBRL,
@@ -91,6 +96,22 @@ import {
 import { applySeoMetadata } from '../../utils/seo';
 import { deleteMediaOnServer, uploadMediaToServer } from '../../services/mediaService';
 import { PropertyEditorModal } from './PropertyEditorModal';
+
+function formatAdminError(err: unknown, fallback: string): string {
+  if (!(err instanceof Error)) return fallback;
+  try {
+    const parsed = JSON.parse(err.message) as { error?: string; path?: string; operationType?: string };
+    if (parsed?.error) {
+      if (parsed.error.toLowerCase().includes('permission')) {
+        return `Sem permissão para ${parsed.operationType || 'alterar'} em ${parsed.path || 'Firestore'}. Verifique sua conta administrativa e tente novamente.`;
+      }
+      return parsed.error;
+    }
+  } catch {
+    // Plain error string
+  }
+  return err.message || fallback;
+}
 
 interface AdminDashboardProps {
   onNavigate: (to: string) => void;
@@ -188,6 +209,7 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
   const [lpAccentColor, setLpAccentColor] = useState('#9A744B');
   const [lpHighlightsText, setLpHighlightsText] = useState('');
   const [lpStatus, setLpStatus] = useState<'draft' | 'published'>('draft');
+  const [lpUploading, setLpUploading] = useState(false);
 
   // Leads CRM state
   const [leadQuery, setLeadQuery] = useState('');
@@ -195,24 +217,31 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
   const [leadNotesDraft, setLeadNotesDraft] = useState<Record<string, string>>({});
 
   // Testimonials & Campaigns state
+  const [editingTestId, setEditingTestId] = useState<string | null>(null);
   const [testName, setTestName] = useState('');
   const [testRole, setTestRole] = useState('');
   const [testQuote, setTestQuote] = useState('');
   const [testPropRef, setTestPropRef] = useState('');
   const [testStatus, setTestStatus] = useState<'draft' | 'published'>('published');
 
+  const [editingCampId, setEditingCampId] = useState<string | null>(null);
   const [campName, setCampName] = useState('');
   const [campChannel, setCampChannel] = useState('Google Ads');
   const [campUtmSource, setCampUtmSource] = useState('google');
   const [campUtmMedium, setCampUtmMedium] = useState('cpc');
   const [campUtmCampaign, setCampUtmCampaign] = useState('');
+  const [campStatus, setCampStatus] = useState<Campaign['status']>('active');
   const [campBudget, setCampBudget] = useState(0);
 
-  // Branding & Settings form state synced from active tenant
+  // Branding & Settings form state synced from active tenant (with dirty guard)
   const [brandForm, setBrandForm] = useState<Tenant>(tenant);
   const [regionsInput, setRegionsInput] = useState(tenant.regions.join(', '));
   const [specialtiesInput, setSpecialtiesInput] = useState(tenant.specialties.join('\n'));
+  const [brandDirty, setBrandDirty] = useState(false);
   const [savingBrand, setSavingBrand] = useState(false);
+  const [uploadingBrandField, setUploadingBrandField] = useState<string | null>(null);
+  const lastTenantIdRef = useRef<string>(activeTenantId);
+  const noticeTimerRef = useRef<number | null>(null);
 
   // New Tenant form (platform admin)
   const [newTenantBrand, setNewTenantBrand] = useState('');
@@ -229,6 +258,20 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
   const [showConfirmPwd, setShowConfirmPwd] = useState(false);
   const [updatingPassword, setUpdatingPassword] = useState(false);
 
+  const showNotice = (type: 'ok' | 'err', text: string) => {
+    setNotice({ type, text });
+    if (noticeTimerRef.current) {
+      window.clearTimeout(noticeTimerRef.current);
+    }
+    noticeTimerRef.current = window.setTimeout(() => setNotice(null), 5000);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (noticeTimerRef.current) window.clearTimeout(noticeTimerRef.current);
+    };
+  }, []);
+
   useEffect(() => {
     applySeoMetadata({
       title: `Painel Admin — ${tenant.brandName}`,
@@ -238,10 +281,17 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
   }, [tenant.brandName]);
 
   useEffect(() => {
-    setBrandForm(tenant);
-    setRegionsInput((tenant.regions || []).join(', '));
-    setSpecialtiesInput((tenant.specialties || []).join('\n'));
-  }, [tenant]);
+    const tenantChanged = lastTenantIdRef.current !== tenant.id;
+    if (tenantChanged) {
+      lastTenantIdRef.current = tenant.id;
+      setBrandDirty(false);
+    }
+    if (!brandDirty || tenantChanged) {
+      setBrandForm(tenant);
+      setRegionsInput((tenant.regions || []).join(', '));
+      setSpecialtiesInput((tenant.specialties || []).join('\n'));
+    }
+  }, [tenant, brandDirty]);
 
   useEffect(() => {
     fetch('/api/health')
@@ -252,18 +302,18 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
 
   useEffect(() => {
     if (!user) return;
-    const u1 = subscribeManagedProperties(activeTenantId, user.uid, isAdmin, setProperties);
-    const u2 = subscribeManagedDevelopments(activeTenantId, user.uid, isAdmin, setDevelopments);
-    const u3 = subscribeManagedLandingPages(activeTenantId, user.uid, isAdmin, setLandingPages);
-    const u4 = subscribeManagedLeads(activeTenantId, user.uid, isAdmin, setLeads);
-    const u5 = subscribeManagedTestimonials(activeTenantId, user.uid, isAdmin, setTestimonials);
+    const onListenerErr = (err: Error) => {
+      showNotice('err', formatAdminError(err, 'Falha na sincronização em tempo real com o Firestore.'));
+    };
+    const u1 = subscribeManagedProperties(activeTenantId, user.uid, isAdmin, setProperties, onListenerErr);
+    const u2 = subscribeManagedDevelopments(activeTenantId, user.uid, isAdmin, setDevelopments, onListenerErr);
+    const u3 = subscribeManagedLandingPages(activeTenantId, user.uid, isAdmin, setLandingPages, onListenerErr);
+    const u4 = subscribeManagedLeads(activeTenantId, user.uid, isAdmin, setLeads, onListenerErr);
+    const u5 = subscribeManagedTestimonials(activeTenantId, user.uid, isAdmin, setTestimonials, onListenerErr);
     const u6 = subscribeManagedAnalytics(activeTenantId, user.uid, isAdmin, setAnalyticsEvents);
-    const u7 = subscribeManagedCampaigns(activeTenantId, user.uid, isAdmin, setCampaigns);
+    const u7 = subscribeManagedCampaigns(activeTenantId, user.uid, isAdmin, setCampaigns, onListenerErr);
     const u8 = subscribeAuditLogs(activeTenantId, user.uid, isAdmin, setAuditLogs);
-
-    listTenants(isAdmin, user.uid)
-      .then(setAllTenants)
-      .catch(() => {});
+    const u9 = subscribeManagedTenants(isAdmin, user.uid, setAllTenants);
 
     return () => {
       u1();
@@ -274,13 +324,9 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
       u6();
       u7();
       u8();
+      u9();
     };
   }, [activeTenantId, user, isAdmin]);
-
-  const showNotice = (type: 'ok' | 'err', text: string) => {
-    setNotice({ type, text });
-    window.setTimeout(() => setNotice(null), 4500);
-  };
 
   // Real Aggregations for Analytics Dashboard
   const kpis = useMemo(() => {
@@ -357,10 +403,10 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
         entityType: 'property',
         entityId: prop.id,
         summary: `Alterou status de "${prop.title}" para ${nextStatus}`,
-      });
+      }).catch(() => {});
       showNotice('ok', `Imóvel ${nextStatus === 'published' ? 'publicado no site em tempo real' : 'movido para rascunho'}.`);
     } catch (err) {
-      showNotice('err', err instanceof Error ? err.message : 'Erro ao alterar status do imóvel.');
+      showNotice('err', formatAdminError(err, 'Erro ao alterar status do imóvel.'));
     }
   };
 
@@ -377,10 +423,32 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
         entityType: 'property',
         entityId: prop.id,
         summary: `${!prop.featured ? 'Destacou' : 'Removeu destaque de'} "${prop.title}"`,
-      });
-      showNotice('ok', !prop.featured ? 'Imóvel destacado na Home.' : 'Destaque removido.');
+      }).catch(() => {});
+      showNotice('ok', !prop.featured ? 'Imóvel destacado na Home em tempo real.' : 'Destaque removido em tempo real.');
     } catch (err) {
-      showNotice('err', err instanceof Error ? err.message : 'Erro ao atualizar destaque do imóvel.');
+      showNotice('err', formatAdminError(err, 'Erro ao atualizar destaque do imóvel.'));
+    }
+  };
+
+  const handleMovePropertyOrder = async (prop: Property, direction: -1 | 1) => {
+    if (!user) return;
+    const idx = properties.findIndex((p) => p.id === prop.id);
+    const targetIdx = idx + direction;
+    if (idx < 0 || targetIdx < 0 || targetIdx >= properties.length) return;
+    const reordered = [...properties];
+    const [moved] = reordered.splice(idx, 1);
+    reordered.splice(targetIdx, 0, moved);
+    try {
+      await Promise.all(
+        reordered.map((item, orderIdx) =>
+          (item.sortOrder ?? 0) !== orderIdx
+            ? saveProperty({ ...item, sortOrder: orderIdx }, false)
+            : Promise.resolve()
+        )
+      );
+      showNotice('ok', 'Ordem de exibição dos imóveis atualizada em tempo real.');
+    } catch (err) {
+      showNotice('err', formatAdminError(err, 'Erro ao reordenar imóveis.'));
     }
   };
 
@@ -397,6 +465,7 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
       slug: `${slugify(prop.title)}-copia-${Date.now().toString(36).slice(-4)}`,
       status: 'draft',
       featured: false,
+      sortOrder: properties.length,
       viewsCount: 0,
     };
     try {
@@ -410,10 +479,10 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
         entityType: 'property',
         entityId: newId,
         summary: `Duplicou imóvel "${prop.title}" como rascunho`,
-      });
+      }).catch(() => {});
       showNotice('ok', 'Cópia criada como rascunho.');
     } catch (err) {
-      showNotice('err', err instanceof Error ? err.message : 'Erro ao duplicar imóvel.');
+      showNotice('err', formatAdminError(err, 'Erro ao duplicar imóvel.'));
     }
   };
 
@@ -425,11 +494,14 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
         ...(prop.images || []),
         ...(prop.panorama360Images || []),
       ];
-      await Promise.all(
-        mediaToClean.map((item) =>
+      await Promise.all([
+        ...mediaToClean.map((item) =>
           deleteMediaOnServer(activeTenantId, item.url, item.pathname).catch(() => {})
-        )
-      );
+        ),
+        ...(prop.videos || []).map((v) =>
+          deleteMediaOnServer(activeTenantId, v.url).catch(() => {})
+        ),
+      ]);
       await writeAuditLog({
         tenantId: activeTenantId,
         ownerUid: prop.ownerUid,
@@ -439,10 +511,10 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
         entityType: 'property',
         entityId: prop.id,
         summary: `Removeu imóvel "${prop.title}"`,
-      });
+      }).catch(() => {});
       showNotice('ok', 'Imóvel removido permanentemente do banco e do site.');
     } catch (err) {
-      showNotice('err', err instanceof Error ? err.message : 'Erro ao remover imóvel.');
+      showNotice('err', formatAdminError(err, 'Erro ao remover imóvel.'));
     }
   };
 
@@ -555,10 +627,20 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
         entityType: 'development',
         entityId: dev.id,
         summary: `Alterou status de "${dev.name}" para ${nextStatus}`,
-      });
+      }).catch(() => {});
       showNotice('ok', `Empreendimento ${nextStatus === 'published' ? 'publicado no site em tempo real' : 'movido para rascunho'}.`);
     } catch (err) {
-      showNotice('err', err instanceof Error ? err.message : 'Erro ao alterar status do empreendimento.');
+      showNotice('err', formatAdminError(err, 'Erro ao alterar status do empreendimento.'));
+    }
+  };
+
+  const handleToggleDevelopmentFeatured = async (dev: Development) => {
+    if (!user) return;
+    try {
+      await saveDevelopment({ ...dev, featured: !dev.featured }, false);
+      showNotice('ok', !dev.featured ? 'Empreendimento destacado na Home em tempo real.' : 'Destaque do empreendimento removido.');
+    } catch (err) {
+      showNotice('err', formatAdminError(err, 'Erro ao atualizar destaque do empreendimento.'));
     }
   };
 
@@ -581,10 +663,10 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
         entityType: 'development',
         entityId: dev.id,
         summary: `Removeu empreendimento "${dev.name}"`,
-      });
+      }).catch(() => {});
       showNotice('ok', 'Empreendimento removido permanentemente do banco e do site.');
     } catch (err) {
-      showNotice('err', err instanceof Error ? err.message : 'Erro ao remover empreendimento.');
+      showNotice('err', formatAdminError(err, 'Erro ao remover empreendimento.'));
     }
   };
 
@@ -600,7 +682,7 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
       id,
       tenantId: activeTenantId,
       ownerUid: existing?.ownerUid || tenant.ownerUid || user.uid,
-      slug: existing?.slug || `${slugify(devName)}-${id.slice(-4).toLowerCase()}`,
+      slug: existing?.slug || slugify(`${devName}-${id.slice(-4)}`),
       name: devName.trim(),
       developer: devDeveloper.trim(),
       category: devCategory,
@@ -630,7 +712,7 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
         entityType: 'development',
         entityId: id,
         summary: `${editingDevId ? 'Atualizou' : 'Cadastrou'} empreendimento "${payload.name}" (${payload.status})`,
-      });
+      }).catch(() => {});
       setDevModalOpen(false);
       showNotice('ok', `Empreendimento salvo e ${payload.status === 'published' ? 'publicado em tempo real!' : 'salvo como rascunho.'}`);
     } catch (err) {
@@ -722,11 +804,54 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
         entityType: 'landingPage',
         entityId: id,
         summary: `${editingLpId ? 'Atualizou' : 'Criou'} landing page "/oferta/${cleanSlug}"`,
-      });
+      }).catch(() => {});
       setLpModalOpen(false);
-      showNotice('ok', `Landing page salva! URL: /oferta/${cleanSlug}`);
+      showNotice('ok', `Landing page salva permanentemente! URL: /oferta/${cleanSlug}`);
     } catch (err) {
-      showNotice('err', err instanceof Error ? err.message : 'Erro ao salvar landing page.');
+      showNotice('err', formatAdminError(err, 'Erro ao salvar landing page.'));
+    }
+  };
+
+  const handleLpHeroUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setLpUploading(true);
+    try {
+      const res = await uploadMediaToServer({
+        tenantId: activeTenantId,
+        file,
+        filename: file.name,
+        mimeType: file.type,
+        folder: 'landing-pages',
+      });
+      setLpHeroImage(res.url);
+      showNotice('ok', 'Imagem de capa da landing page enviada.');
+    } catch (err) {
+      showNotice('err', formatAdminError(err, 'Erro ao enviar imagem da landing page.'));
+    } finally {
+      setLpUploading(false);
+    }
+  };
+
+  const handleToggleLandingPageStatus = async (lp: LandingPage) => {
+    if (!user) return;
+    const nextStatus = lp.status === 'published' ? 'draft' : 'published';
+    try {
+      await saveLandingPage({ ...lp, status: nextStatus }, false);
+      await writeAuditLog({
+        tenantId: activeTenantId,
+        ownerUid: lp.ownerUid,
+        actorUid: user.uid,
+        actorEmail: user.email || '',
+        action: 'toggle_landing_page_status',
+        entityType: 'landingPage',
+        entityId: lp.id,
+        summary: `Alterou status da landing page "/oferta/${lp.slug}" para ${nextStatus}`,
+      }).catch(() => {});
+      showNotice('ok', `Landing page ${nextStatus === 'published' ? 'publicada ao vivo!' : 'movida para rascunho.'}`);
+    } catch (err) {
+      showNotice('err', formatAdminError(err, 'Erro ao alterar status da landing page.'));
     }
   };
 
@@ -743,10 +868,10 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
         entityType: 'landingPage',
         entityId: lp.id,
         summary: `Removeu landing page "/oferta/${lp.slug}"`,
-      });
+      }).catch(() => {});
       showNotice('ok', 'Landing page removida permanentemente.');
     } catch (err) {
-      showNotice('err', err instanceof Error ? err.message : 'Erro ao remover landing page.');
+      showNotice('err', formatAdminError(err, 'Erro ao remover landing page.'));
     }
   };
 
@@ -788,15 +913,39 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
     URL.revokeObjectURL(url);
   };
 
-  // Branding & Theme handlers
-  const handleApplyPreset = (presetId: ThemePresetId) => {
+  // Branding & Theme handlers (all theme presets and media uploads/removals persist immediately)
+  const handleApplyPreset = async (presetId: ThemePresetId) => {
+    if (!user) return;
     const preset = THEME_PRESETS[presetId];
+    const nextThemeConfig = { ...preset.config };
     setBrandForm((prev) => ({
       ...prev,
       themePreset: presetId,
-      themeConfig: { ...preset.config },
+      themeConfig: nextThemeConfig,
     }));
-    showNotice('ok', `Tema "${preset.name}" aplicado ao formulário. Salve para publicar ao vivo.`);
+    applyThemeToDocument(nextThemeConfig);
+    setSavingBrand(true);
+    try {
+      await updateTenantSettings(activeTenantId, {
+        themePreset: presetId,
+        themeConfig: nextThemeConfig,
+      });
+      await writeAuditLog({
+        tenantId: activeTenantId,
+        ownerUid: tenant.ownerUid || user.uid,
+        actorUid: user.uid,
+        actorEmail: user.email || '',
+        action: 'apply_theme_preset',
+        entityType: 'tenant',
+        entityId: activeTenantId,
+        summary: `Aplicou tema "${preset.name}" ao vivo no site`,
+      }).catch(() => {});
+      showNotice('ok', `Tema "${preset.name}" salvo permanentemente e aplicado ao site em tempo real!`);
+    } catch (err) {
+      showNotice('err', formatAdminError(err, 'Erro ao aplicar tema.'));
+    } finally {
+      setSavingBrand(false);
+    }
   };
 
   const handleBrandImageUpload = async (
@@ -804,7 +953,9 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
     field: 'logoUrl' | 'faviconUrl' | 'aboutPhotoUrl' | 'heroImages'
   ) => {
     const files = Array.from(e.target.files || []);
-    if (files.length === 0) return;
+    e.target.value = '';
+    if (files.length === 0 || !user) return;
+    setUploadingBrandField(field);
     try {
       const urls: string[] = [];
       for (const file of files) {
@@ -819,15 +970,81 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
         urls.push(res.url);
       }
       if (field === 'heroImages') {
-        setBrandForm((prev) => ({ ...prev, heroImages: [...(prev.heroImages || []), ...urls] }));
+        const nextHero = [...(brandForm.heroImages || []), ...urls].slice(0, 10);
+        setBrandForm((prev) => ({ ...prev, heroImages: nextHero }));
+        await updateTenantSettings(activeTenantId, { heroImages: nextHero });
       } else {
-        setBrandForm((prev) => ({ ...prev, [field]: urls[0] }));
+        const nextUrl = urls[0];
+        const partial: Partial<Tenant> =
+          field === 'logoUrl'
+            ? { logoUrl: nextUrl, faviconUrl: brandForm.faviconUrl || nextUrl }
+            : { [field]: nextUrl };
+        setBrandForm((prev) => ({ ...prev, ...partial }));
+        await updateTenantSettings(activeTenantId, partial);
       }
-      showNotice('ok', 'Imagem enviada e vinculada. Clique em "Salvar Alterações" para publicar.');
+      await writeAuditLog({
+        tenantId: activeTenantId,
+        ownerUid: tenant.ownerUid || user.uid,
+        actorUid: user.uid,
+        actorEmail: user.email || '',
+        action: 'update_brand_media',
+        entityType: 'tenant',
+        entityId: activeTenantId,
+        summary: `Atualizou imagem de marca (${field}) permanentemente`,
+      }).catch(() => {});
+      showNotice('ok', 'Imagem enviada, salva no banco e publicada no site em tempo real!');
     } catch (err) {
-      showNotice('err', err instanceof Error ? err.message : 'Erro no upload.');
+      showNotice('err', formatAdminError(err, 'Erro no upload da imagem.'));
     } finally {
-      e.target.value = '';
+      setUploadingBrandField(null);
+    }
+  };
+
+  const handleRemoveBrandAsset = async (field: 'logoUrl' | 'faviconUrl' | 'aboutPhotoUrl') => {
+    if (!user) return;
+    const currentUrl = brandForm[field];
+    try {
+      setBrandForm((prev) => ({ ...prev, [field]: '' }));
+      await updateTenantSettings(activeTenantId, { [field]: '' });
+      if (currentUrl && (currentUrl.startsWith('/uploads/') || currentUrl.includes('blob.vercel-storage.com'))) {
+        await deleteMediaOnServer(activeTenantId, currentUrl).catch(() => {});
+      }
+      showNotice('ok', 'Imagem removida permanentemente do site.');
+    } catch (err) {
+      showNotice('err', formatAdminError(err, 'Erro ao remover imagem.'));
+    }
+  };
+
+  const handleRemoveHeroImage = async (idx: number) => {
+    if (!user) return;
+    const current = brandForm.heroImages || [];
+    const removedUrl = current[idx];
+    const nextHero = current.filter((_, i) => i !== idx);
+    try {
+      setBrandForm((prev) => ({ ...prev, heroImages: nextHero }));
+      await updateTenantSettings(activeTenantId, { heroImages: nextHero });
+      if (removedUrl && (removedUrl.startsWith('/uploads/') || removedUrl.includes('blob.vercel-storage.com'))) {
+        await deleteMediaOnServer(activeTenantId, removedUrl).catch(() => {});
+      }
+      showNotice('ok', 'Foto removida do Hero em tempo real.');
+    } catch (err) {
+      showNotice('err', formatAdminError(err, 'Erro ao remover foto do Hero.'));
+    }
+  };
+
+  const handleMoveHeroImage = async (idx: number, dir: -1 | 1) => {
+    if (!user) return;
+    const current = [...(brandForm.heroImages || [])];
+    const target = idx + dir;
+    if (target < 0 || target >= current.length) return;
+    const [moved] = current.splice(idx, 1);
+    current.splice(target, 0, moved);
+    try {
+      setBrandForm((prev) => ({ ...prev, heroImages: current }));
+      await updateTenantSettings(activeTenantId, { heroImages: current });
+      showNotice('ok', 'Ordem das fotos do Hero atualizada em tempo real.');
+    } catch (err) {
+      showNotice('err', formatAdminError(err, 'Erro ao reordenar fotos do Hero.'));
     }
   };
 
@@ -840,8 +1057,15 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
         ...brandForm,
         regions: regionsInput.split(',').map((s) => s.trim()).filter(Boolean).slice(0, 30),
         specialties: specialtiesInput.split('\n').map((s) => s.trim()).filter(Boolean).slice(0, 20),
+        differentials: (brandForm.differentials || [])
+          .filter((d) => d.title.trim() || d.description.trim())
+          .slice(0, 12),
       };
       await updateTenantSettings(activeTenantId, updatedFields);
+      if (updatedFields.themeConfig) {
+        applyThemeToDocument(updatedFields.themeConfig);
+      }
+      setBrandDirty(false);
       await writeAuditLog({
         tenantId: activeTenantId,
         ownerUid: tenant.ownerUid || user.uid,
@@ -851,10 +1075,10 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
         entityType: 'tenant',
         entityId: activeTenantId,
         summary: `Atualizou configurações, tema (${brandForm.themePreset}) e perfil de "${brandForm.brandName}"`,
-      });
-      showNotice('ok', 'Configurações salvas e aplicadas ao site em tempo real!');
+      }).catch(() => {});
+      showNotice('ok', 'Todas as alterações foram salvas permanentemente e aplicadas ao site em tempo real!');
     } catch (err) {
-      showNotice('err', err instanceof Error ? err.message : 'Erro ao salvar configurações.');
+      showNotice('err', formatAdminError(err, 'Erro ao salvar configurações.'));
     } finally {
       setSavingBrand(false);
     }
@@ -885,11 +1109,7 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
       aboutHeadline: newTenantBroker.trim(),
     };
     try {
-      await setDoc(doc(db, 'tenants', id), {
-        ...newTenant,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+      await createTenantDocument(newTenant);
       setAllTenants((prev) => [...prev, newTenant]);
       setActiveTenantId(id);
       setNewTenantBrand('');
@@ -927,7 +1147,7 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
         entityType: 'tenant',
         entityId: activeTenantId,
         summary: `Alterou a senha administrativa de ${user.email || 'admin'} em tempo real no Firebase`,
-      });
+      }).catch(() => {});
       setCurrentPassword('');
       setNewPassword('');
       setConfirmNewPassword('');
@@ -1260,10 +1480,26 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                     <div className="flex flex-wrap items-center gap-2 shrink-0">
                       <button
                         type="button"
+                        onClick={() => handleMovePropertyOrder(prop, -1)}
+                        title="Mover para cima na ordenação"
+                        className="p-2 border border-[var(--site-border)] rounded text-xs hover:border-[var(--site-accent)]"
+                      >
+                        <ArrowUp className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleMovePropertyOrder(prop, 1)}
+                        title="Mover para baixo na ordenação"
+                        className="p-2 border border-[var(--site-border)] rounded text-xs hover:border-[var(--site-accent)]"
+                      >
+                        <ArrowDown className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => handleTogglePropertyFeatured(prop)}
                         title="Destacar na Home"
                         className={`p-2 border rounded text-xs ${
-                          prop.featured ? 'border-amber-500 text-amber-700' : 'border-[var(--site-border)] text-[var(--site-text-muted)]'
+                          prop.featured ? 'border-amber-500 text-amber-700 bg-amber-50' : 'border-[var(--site-border)] text-[var(--site-text-muted)]'
                         }`}
                       >
                         <Star className="w-3.5 h-3.5" />
@@ -1369,6 +1605,16 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                         </div>
                       </div>
                       <div className="flex flex-wrap items-center justify-end gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleDevelopmentFeatured(dev)}
+                          title="Destacar na Home"
+                          className={`p-1.5 border rounded text-xs ${
+                            dev.featured ? 'border-amber-500 text-amber-700 bg-amber-50' : 'border-[var(--site-border)] text-[var(--site-text-muted)]'
+                          }`}
+                        >
+                          <Star className="w-3.5 h-3.5" />
+                        </button>
                         <button
                           type="button"
                           onClick={() => handleToggleDevelopmentStatus(dev)}
@@ -1506,6 +1752,15 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                       </select>
                     </label>
                   </div>
+
+                  <label className="inline-flex items-center gap-2 text-xs cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={devFeatured}
+                      onChange={(e) => setDevFeatured(e.target.checked)}
+                    />
+                    <span>Destacar este empreendimento na página inicial</span>
+                  </label>
 
                   <label className="space-y-1 block text-xs">
                     <span>Descrição do Projeto</span>
@@ -1687,6 +1942,13 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                       <div className="flex flex-wrap items-center gap-2">
                         <button
                           type="button"
+                          onClick={() => handleToggleLandingPageStatus(lp)}
+                          className="px-3 py-1.5 text-xs border border-[var(--site-border)] rounded hover:border-[var(--site-accent)]"
+                        >
+                          {lp.status === 'published' ? 'Despublicar' : 'Publicar'}
+                        </button>
+                        <button
+                          type="button"
                           onClick={async () => {
                             await navigator.clipboard.writeText(lpUrl);
                             showNotice('ok', 'URL da landing page copiada!');
@@ -1706,6 +1968,7 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                         <button
                           type="button"
                           onClick={() => onNavigate(`/oferta/${lp.slug}`)}
+                          title="Visualizar landing page"
                           className="p-2 border border-[var(--site-border)] rounded"
                         >
                           <ExternalLink className="w-3.5 h-3.5" />
@@ -1713,6 +1976,7 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                         <button
                           type="button"
                           onClick={() => handleDeleteLandingPage(lp)}
+                          title="Excluir landing page"
                           className="p-2 border border-red-200 text-red-700 rounded"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
@@ -1842,6 +2106,38 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                         className="w-full h-10 p-1 border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
                       />
                     </label>
+                  </div>
+
+                  <div className="space-y-2">
+                    <span className="block font-medium">Imagem de Capa / Hero da Oferta</span>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <label className="inline-flex items-center gap-1.5 px-3 py-2 border border-[var(--site-border)] rounded cursor-pointer hover:border-[var(--site-accent)]">
+                        <Upload className="w-3.5 h-3.5" />
+                        {lpUploading ? 'Enviando imagem...' : lpHeroImage ? 'Trocar Imagem' : 'Enviar Imagem de Capa'}
+                        <input
+                          type="file"
+                          accept="image/*"
+                          disabled={lpUploading}
+                          className="hidden"
+                          onChange={handleLpHeroUpload}
+                        />
+                      </label>
+                      {lpHeroImage && (
+                        <button
+                          type="button"
+                          onClick={() => setLpHeroImage('')}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-red-700 border border-red-200 rounded hover:bg-red-50"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          Remover capa
+                        </button>
+                      )}
+                    </div>
+                    {lpHeroImage && (
+                      <div className="w-full max-w-xs aspect-[16/9] rounded overflow-hidden border border-[var(--site-border)]">
+                        <img src={lpHeroImage} alt="Capa da Landing Page" className="w-full h-full object-cover" />
+                      </div>
+                    )}
                   </div>
 
                   <label className="space-y-1 block">
@@ -2034,7 +2330,7 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
               <div>
                 <h2 className="font-editorial text-2xl font-semibold">Depoimentos Reais de Clientes</h2>
                 <p className="text-xs text-[var(--site-text-muted)]">
-                  Apenas depoimentos cadastrados e publicados aqui são exibidos no site público.
+                  Adicione, edite, publique ou remova depoimentos em tempo real diretamente no site.
                 </p>
               </div>
 
@@ -2042,27 +2338,36 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                 onSubmit={async (e) => {
                   e.preventDefault();
                   if (!user || !testName.trim() || !testQuote.trim()) return;
+                  const isNewTest = !editingTestId;
+                  const existingTest = editingTestId ? testimonials.find((x) => x.id === editingTestId) : undefined;
                   try {
                     await saveTestimonial(
                       {
-                        id: generateSafeId('test'),
+                        id: editingTestId || generateSafeId('test'),
                         tenantId: activeTenantId,
-                        ownerUid: tenant.ownerUid || user.uid,
+                        ownerUid: existingTest?.ownerUid || tenant.ownerUid || user.uid,
                         clientName: testName.trim(),
                         clientRole: testRole.trim(),
                         quote: testQuote.trim(),
                         propertyReference: testPropRef.trim(),
                         status: testStatus,
                       },
-                      true
+                      isNewTest
                     );
+                    setEditingTestId(null);
                     setTestName('');
                     setTestRole('');
                     setTestQuote('');
                     setTestPropRef('');
-                    showNotice('ok', 'Depoimento cadastrado e atualizado em tempo real.');
+                    setTestStatus('published');
+                    showNotice(
+                      'ok',
+                      isNewTest
+                        ? 'Depoimento cadastrado e atualizado em tempo real.'
+                        : 'Depoimento atualizado permanentemente no site.'
+                    );
                   } catch (err) {
-                    showNotice('err', err instanceof Error ? err.message : 'Erro ao salvar depoimento.');
+                    showNotice('err', formatAdminError(err, 'Erro ao salvar depoimento.'));
                   }
                 }}
                 className="space-y-3 text-xs"
@@ -2099,7 +2404,7 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                   placeholder="Depoimento real autorizado pelo cliente..."
                   className="w-full px-3 py-2 border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
                 />
-                <div className="flex items-center justify-between">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <select
                     value={testStatus}
                     onChange={(e) => setTestStatus(e.target.value as 'draft' | 'published')}
@@ -2108,36 +2413,93 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                     <option value="published">Publicado</option>
                     <option value="draft">Rascunho</option>
                   </select>
-                  <button
-                    type="submit"
-                    className="px-4 py-2 font-medium bg-[var(--site-text)] text-[var(--site-surface)] rounded"
-                  >
-                    Adicionar Depoimento
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {editingTestId && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingTestId(null);
+                          setTestName('');
+                          setTestRole('');
+                          setTestQuote('');
+                          setTestPropRef('');
+                          setTestStatus('published');
+                        }}
+                        className="px-3 py-2 border border-[var(--site-border)] rounded"
+                      >
+                        Cancelar
+                      </button>
+                    )}
+                    <button
+                      type="submit"
+                      className="px-4 py-2 font-medium bg-[var(--site-text)] text-[var(--site-surface)] rounded"
+                    >
+                      {editingTestId ? 'Salvar Alteração' : 'Adicionar Depoimento'}
+                    </button>
+                  </div>
                 </div>
               </form>
 
               <div className="space-y-3 pt-4 border-t border-[var(--site-border)]">
                 {testimonials.map((t) => (
                   <div key={t.id} className="p-3 bg-[var(--site-bg)] border border-[var(--site-border)] rounded text-xs flex justify-between gap-3">
-                    <div>
-                      <p className="font-semibold">{t.clientName}</p>
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="font-semibold">{t.clientName}</p>
+                        <span className={t.status === 'published' ? 'text-emerald-700 font-medium' : 'text-amber-700'}>
+                          · {t.status === 'published' ? 'Publicado' : 'Rascunho'}
+                        </span>
+                      </div>
                       <p className="text-[var(--site-text-muted)] italic">“{t.quote}”</p>
                     </div>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        try {
-                          await deleteTestimonial(t.id);
-                          showNotice('ok', 'Depoimento removido.');
-                        } catch (err) {
-                          showNotice('err', err instanceof Error ? err.message : 'Erro ao remover depoimento.');
-                        }
-                      }}
-                      className="p-1.5 text-red-700 self-start"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    <div className="flex items-start gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            const nextStatus = t.status === 'published' ? 'draft' : 'published';
+                            await saveTestimonial({ ...t, status: nextStatus }, false);
+                            showNotice('ok', nextStatus === 'published' ? 'Depoimento publicado ao vivo.' : 'Depoimento ocultado.');
+                          } catch (err) {
+                            showNotice('err', formatAdminError(err, 'Erro ao atualizar depoimento.'));
+                          }
+                        }}
+                        className="px-2 py-1 border border-[var(--site-border)] rounded hover:border-[var(--site-accent)]"
+                      >
+                        {t.status === 'published' ? 'Ocultar' : 'Publicar'}
+                      </button>
+                      <button
+                        type="button"
+                        title="Editar depoimento"
+                        onClick={() => {
+                          setEditingTestId(t.id);
+                          setTestName(t.clientName);
+                          setTestRole(t.clientRole || '');
+                          setTestPropRef(t.propertyReference || '');
+                          setTestQuote(t.quote);
+                          setTestStatus(t.status);
+                        }}
+                        className="p-1.5 border border-[var(--site-border)] rounded hover:border-[var(--site-accent)]"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        title="Remover depoimento"
+                        onClick={async () => {
+                          try {
+                            await deleteTestimonial(t.id);
+                            if (editingTestId === t.id) setEditingTestId(null);
+                            showNotice('ok', 'Depoimento removido permanentemente.');
+                          } catch (err) {
+                            showNotice('err', formatAdminError(err, 'Erro ao remover depoimento.'));
+                          }
+                        }}
+                        className="p-1.5 text-red-700 border border-red-200 rounded"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -2148,7 +2510,7 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
               <div>
                 <h2 className="font-editorial text-2xl font-semibold">Campanhas & Links UTM</h2>
                 <p className="text-xs text-[var(--site-text-muted)]">
-                  Organize links rastreáveis para Google Ads, Meta Ads e Instagram.
+                  Crie, edite, pause ou remova links rastreáveis para Google Ads, Meta Ads e Instagram.
                 </p>
               </div>
 
@@ -2156,27 +2518,32 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                 onSubmit={async (e) => {
                   e.preventDefault();
                   if (!user || !campName.trim()) return;
+                  const isNewCamp = !editingCampId;
+                  const existingCamp = editingCampId ? campaigns.find((x) => x.id === editingCampId) : undefined;
                   try {
                     await saveCampaign(
                       {
-                        id: generateSafeId('camp'),
+                        id: editingCampId || generateSafeId('camp'),
                         tenantId: activeTenantId,
-                        ownerUid: tenant.ownerUid || user.uid,
+                        ownerUid: existingCamp?.ownerUid || tenant.ownerUid || user.uid,
                         name: campName.trim(),
                         channel: campChannel,
                         utmSource: campUtmSource.trim(),
                         utmMedium: campUtmMedium.trim(),
                         utmCampaign: campUtmCampaign.trim() || slugify(campName),
-                        status: 'active',
+                        status: campStatus,
                         budget: Number(campBudget) || 0,
                       },
-                      true
+                      isNewCamp
                     );
+                    setEditingCampId(null);
                     setCampName('');
                     setCampUtmCampaign('');
-                    showNotice('ok', 'Campanha registrada.');
+                    setCampStatus('active');
+                    setCampBudget(0);
+                    showNotice('ok', isNewCamp ? 'Campanha registrada.' : 'Campanha atualizada permanentemente.');
                   } catch (err) {
-                    showNotice('err', err instanceof Error ? err.message : 'Erro ao salvar campanha.');
+                    showNotice('err', formatAdminError(err, 'Erro ao salvar campanha.'));
                   }
                 }}
                 className="space-y-3 text-xs"
@@ -2212,12 +2579,12 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                     className="px-3 py-2 border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
                   />
                 </div>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-3 gap-2">
                   <input
                     type="text"
                     value={campChannel}
                     onChange={(e) => setCampChannel(e.target.value)}
-                    placeholder="Canal (Google Ads / Instagram)"
+                    placeholder="Canal"
                     className="px-3 py-2 border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
                   />
                   <input
@@ -2225,39 +2592,100 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                     min={0}
                     value={campBudget}
                     onChange={(e) => setCampBudget(Number(e.target.value))}
-                    placeholder="Orçamento mensal (R$)"
+                    placeholder="Orçamento (R$)"
                     className="px-3 py-2 border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
                   />
+                  <select
+                    value={campStatus}
+                    onChange={(e) => setCampStatus(e.target.value as Campaign['status'])}
+                    className="px-3 py-2 border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
+                  >
+                    <option value="active">Ativa</option>
+                    <option value="paused">Pausada</option>
+                    <option value="ended">Encerrada</option>
+                  </select>
                 </div>
-                <button
-                  type="submit"
-                  className="px-4 py-2 font-medium bg-[var(--site-text)] text-[var(--site-surface)] rounded"
-                >
-                  Salvar Campanha
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="submit"
+                    className="px-4 py-2 font-medium bg-[var(--site-text)] text-[var(--site-surface)] rounded"
+                  >
+                    {editingCampId ? 'Salvar Alteração' : 'Salvar Campanha'}
+                  </button>
+                  {editingCampId && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingCampId(null);
+                        setCampName('');
+                        setCampUtmCampaign('');
+                        setCampStatus('active');
+                        setCampBudget(0);
+                      }}
+                      className="px-3 py-2 border border-[var(--site-border)] rounded"
+                    >
+                      Cancelar
+                    </button>
+                  )}
+                </div>
               </form>
 
               <div className="space-y-3 pt-4 border-t border-[var(--site-border)]">
                 {campaigns.map((c) => {
                   const utmUrl = `${window.location.origin}/?utm_source=${encodeURIComponent(c.utmSource)}&utm_medium=${encodeURIComponent(c.utmMedium)}&utm_campaign=${encodeURIComponent(c.utmCampaign)}`;
                   return (
-                    <div key={c.id} className="p-3 bg-[var(--site-bg)] border border-[var(--site-border)] rounded text-xs flex items-center justify-between gap-3">
+                    <div key={c.id} className="p-3 bg-[var(--site-bg)] border border-[var(--site-border)] rounded text-xs flex flex-wrap items-center justify-between gap-2">
                       <div className="min-w-0">
                         <p className="font-semibold truncate">{c.name}</p>
                         <p className="text-[var(--site-text-muted)] font-mono truncate">
-                          {c.channel} · {c.utmSource}/{c.utmMedium}
+                          {c.channel} · {c.utmSource}/{c.utmMedium} · {c.status}
                         </p>
                       </div>
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          await navigator.clipboard.writeText(utmUrl);
-                          showNotice('ok', 'Link UTM copiado!');
-                        }}
-                        className="px-2.5 py-1 border border-[var(--site-border)] rounded shrink-0"
-                      >
-                        Copiar UTM
-                      </button>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            await navigator.clipboard.writeText(utmUrl);
+                            showNotice('ok', 'Link UTM copiado!');
+                          }}
+                          className="px-2.5 py-1 border border-[var(--site-border)] rounded"
+                        >
+                          Copiar UTM
+                        </button>
+                        <button
+                          type="button"
+                          title="Editar campanha"
+                          onClick={() => {
+                            setEditingCampId(c.id);
+                            setCampName(c.name);
+                            setCampChannel(c.channel || 'Google Ads');
+                            setCampUtmSource(c.utmSource || '');
+                            setCampUtmMedium(c.utmMedium || '');
+                            setCampUtmCampaign(c.utmCampaign || '');
+                            setCampStatus(c.status);
+                            setCampBudget(c.budget || 0);
+                          }}
+                          className="p-1.5 border border-[var(--site-border)] rounded"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          title="Excluir campanha"
+                          onClick={async () => {
+                            try {
+                              await deleteCampaign(c.id);
+                              if (editingCampId === c.id) setEditingCampId(null);
+                              showNotice('ok', 'Campanha removida permanentemente.');
+                            } catch (err) {
+                              showNotice('err', formatAdminError(err, 'Erro ao remover campanha.'));
+                            }
+                          }}
+                          className="p-1.5 text-red-700 border border-red-200 rounded"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
                   );
                 })}
@@ -2273,24 +2701,31 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
               <div>
                 <h2 className="font-editorial text-3xl font-semibold">Personalização, Temas & Marca</h2>
                 <p className="text-xs text-[var(--site-text-muted)]">
-                  Altere identidade visual, dados comerciais, logotipo, hero, SEO e tags de rastreamento em tempo real.
+                  Temas e imagens aplicam e salvam imediatamente; demais textos e cores são publicados permanentemente ao salvar.
                 </p>
               </div>
-              <button
-                type="submit"
-                disabled={savingBrand}
-                className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-medium bg-[var(--site-text)] text-[var(--site-surface)] rounded-[var(--site-radius)]"
-              >
-                <Check className="w-4 h-4" />
-                {savingBrand ? 'Salvando...' : 'Salvar Alterações'}
-              </button>
+              <div className="flex items-center gap-3">
+                {brandDirty && (
+                  <span className="text-[11px] font-medium text-amber-700">
+                    Alterações pendentes
+                  </span>
+                )}
+                <button
+                  type="submit"
+                  disabled={savingBrand}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-medium bg-[var(--site-text)] text-[var(--site-surface)] rounded-[var(--site-radius)] disabled:opacity-60"
+                >
+                  <Check className="w-4 h-4" />
+                  {savingBrand ? 'Salvando...' : 'Salvar Alterações'}
+                </button>
+              </div>
             </div>
 
-            {/* 5 Theme Presets */}
+            {/* 5 Theme Presets (Instant Firestore persistence) */}
             <section className="p-6 bg-[var(--site-surface)] border border-[var(--site-border)] rounded-[var(--site-radius)] space-y-4">
               <div className="flex items-center gap-2 text-sm font-semibold">
                 <Sparkles className="w-4 h-4 text-[var(--site-accent)]" />
-                <span>Temas Prontos (aplicação imediata)</span>
+                <span>Temas Prontos (salva e aplica ao vivo imediatamente)</span>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 {Object.values(THEME_PRESETS).map((preset) => {
@@ -2299,9 +2734,10 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                     <button
                       key={preset.id}
                       type="button"
+                      disabled={savingBrand}
                       onClick={() => handleApplyPreset(preset.id)}
                       className={`text-left p-4 border rounded-[var(--site-radius)] space-y-2 transition-colors ${
-                        selected ? 'border-[var(--site-accent)] bg-[var(--site-bg)]' : 'border-[var(--site-border)]'
+                        selected ? 'border-[var(--site-accent)] bg-[var(--site-bg)]' : 'border-[var(--site-border)] hover:border-[var(--site-accent)]/60'
                       }`}
                     >
                       <div className="flex items-center justify-between">
@@ -2318,13 +2754,14 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                 })}
               </div>
 
-              {/* Granular Color & Shape Customizer */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 pt-4 border-t border-[var(--site-border)] text-xs">
+              {/* Granular Color Customizer with live preview */}
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 pt-4 border-t border-[var(--site-border)] text-xs">
                 {(
                   [
                     ['backgroundColor', 'Fundo do site'],
                     ['surfaceColor', 'Superfície / Cards'],
                     ['textColor', 'Texto principal'],
+                    ['primaryColor', 'Cor primária'],
                     ['accentColor', 'Cor de destaque'],
                   ] as Array<[keyof ThemeConfig, string]>
                 ).map(([key, label]) => (
@@ -2332,13 +2769,16 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                     <span>{label}</span>
                     <input
                       type="color"
-                      value={String(brandForm.themeConfig[key])}
-                      onChange={(e) =>
+                      value={String(brandForm.themeConfig[key] || '#9A744B')}
+                      onChange={(e) => {
+                        const nextTheme = { ...brandForm.themeConfig, [key]: e.target.value };
+                        setBrandDirty(true);
                         setBrandForm((prev) => ({
                           ...prev,
-                          themeConfig: { ...prev.themeConfig, [key]: e.target.value },
-                        }))
-                      }
+                          themeConfig: nextTheme,
+                        }));
+                        applyThemeToDocument(nextTheme);
+                      }}
                       className="w-full h-9 p-1 border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
                     />
                   </label>
@@ -2358,7 +2798,10 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                     type="text"
                     required
                     value={brandForm.brandName}
-                    onChange={(e) => setBrandForm({ ...brandForm, brandName: e.target.value })}
+                    onChange={(e) => {
+                      setBrandDirty(true);
+                      setBrandForm({ ...brandForm, brandName: e.target.value });
+                    }}
                     className="w-full px-3 py-2 text-sm border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
                   />
                 </label>
@@ -2368,7 +2811,10 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                     type="text"
                     required
                     value={brandForm.brokerName}
-                    onChange={(e) => setBrandForm({ ...brandForm, brokerName: e.target.value })}
+                    onChange={(e) => {
+                      setBrandDirty(true);
+                      setBrandForm({ ...brandForm, brokerName: e.target.value });
+                    }}
                     className="w-full px-3 py-2 text-sm border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
                   />
                 </label>
@@ -2377,7 +2823,10 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                   <input
                     type="text"
                     value={brandForm.creci}
-                    onChange={(e) => setBrandForm({ ...brandForm, creci: e.target.value })}
+                    onChange={(e) => {
+                      setBrandDirty(true);
+                      setBrandForm({ ...brandForm, creci: e.target.value });
+                    }}
                     placeholder="Ex.: CRECI-RJ 00000"
                     className="w-full px-3 py-2 text-sm border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
                   />
@@ -2387,7 +2836,10 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                   <input
                     type="text"
                     value={brandForm.whatsapp}
-                    onChange={(e) => setBrandForm({ ...brandForm, whatsapp: e.target.value })}
+                    onChange={(e) => {
+                      setBrandDirty(true);
+                      setBrandForm({ ...brandForm, whatsapp: e.target.value });
+                    }}
                     placeholder="Ex.: 21999999999"
                     className="w-full px-3 py-2 text-sm border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
                   />
@@ -2397,7 +2849,10 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                   <input
                     type="text"
                     value={brandForm.phone}
-                    onChange={(e) => setBrandForm({ ...brandForm, phone: e.target.value })}
+                    onChange={(e) => {
+                      setBrandDirty(true);
+                      setBrandForm({ ...brandForm, phone: e.target.value });
+                    }}
                     className="w-full px-3 py-2 text-sm border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
                   />
                 </label>
@@ -2406,7 +2861,10 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                   <input
                     type="email"
                     value={brandForm.email}
-                    onChange={(e) => setBrandForm({ ...brandForm, email: e.target.value })}
+                    onChange={(e) => {
+                      setBrandDirty(true);
+                      setBrandForm({ ...brandForm, email: e.target.value });
+                    }}
                     className="w-full px-3 py-2 text-sm border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
                   />
                 </label>
@@ -2416,7 +2874,10 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                     type="text"
                     required
                     value={brandForm.city}
-                    onChange={(e) => setBrandForm({ ...brandForm, city: e.target.value })}
+                    onChange={(e) => {
+                      setBrandDirty(true);
+                      setBrandForm({ ...brandForm, city: e.target.value });
+                    }}
                     className="w-full px-3 py-2 text-sm border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
                   />
                 </label>
@@ -2425,7 +2886,10 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                   <input
                     type="text"
                     value={brandForm.state}
-                    onChange={(e) => setBrandForm({ ...brandForm, state: e.target.value })}
+                    onChange={(e) => {
+                      setBrandDirty(true);
+                      setBrandForm({ ...brandForm, state: e.target.value });
+                    }}
                     className="w-full px-3 py-2 text-sm border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
                   />
                 </label>
@@ -2434,105 +2898,271 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                   <input
                     type="text"
                     value={brandForm.instagramHandle}
-                    onChange={(e) => setBrandForm({ ...brandForm, instagramHandle: e.target.value })}
+                    onChange={(e) => {
+                      setBrandDirty(true);
+                      setBrandForm({ ...brandForm, instagramHandle: e.target.value });
+                    }}
+                    className="w-full px-3 py-2 text-sm border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
+                  />
+                </label>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <label className="space-y-1 block">
+                  <span>URL Completa do Instagram</span>
+                  <input
+                    type="url"
+                    value={brandForm.instagramUrl}
+                    onChange={(e) => {
+                      setBrandDirty(true);
+                      setBrandForm({ ...brandForm, instagramUrl: e.target.value });
+                    }}
+                    placeholder="https://www.instagram.com/..."
+                    className="w-full px-3 py-2 text-sm border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
+                  />
+                </label>
+                <label className="space-y-1 block">
+                  <span>Regiões atendidas (separadas por vírgula)</span>
+                  <input
+                    type="text"
+                    value={regionsInput}
+                    onChange={(e) => {
+                      setBrandDirty(true);
+                      setRegionsInput(e.target.value);
+                    }}
+                    className="w-full px-3 py-2 text-sm border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
+                  />
+                </label>
+              </div>
+
+              {/* Uploads: Logo, Favicon, Hero Images, About Photo (Immediate Firestore persistence) */}
+              <div className="space-y-4 pt-3 border-t border-[var(--site-border)]">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="flex items-center justify-between gap-4 p-3 rounded border border-[var(--site-border)] bg-[var(--site-bg)]">
+                    <div className="flex items-center gap-3 min-w-0">
+                      {brandForm.logoUrl ? (
+                        <img
+                          src={brandForm.logoUrl}
+                          alt={brandForm.brandName}
+                          referrerPolicy="no-referrer"
+                          className="h-14 w-auto max-w-[110px] object-contain bg-transparent"
+                        />
+                      ) : (
+                        <div className="h-14 w-14 rounded border border-dashed border-[var(--site-border)] flex items-center justify-center text-[10px] text-[var(--site-text-muted)]">
+                          Sem logo
+                        </div>
+                      )}
+                      <div className="text-[11px] text-[var(--site-text-muted)] min-w-0">
+                        <p className="font-medium text-[var(--site-text)]">Logotipo principal</p>
+                        <p>Salvo automaticamente no site.</p>
+                      </div>
+                    </div>
+                    {brandForm.logoUrl && (
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveBrandAsset('logoUrl')}
+                        title="Remover logotipo"
+                        className="p-1.5 text-red-700 border border-red-200 rounded hover:bg-red-50 shrink-0"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex items-center justify-between gap-4 p-3 rounded border border-[var(--site-border)] bg-[var(--site-bg)]">
+                    <div className="flex items-center gap-3 min-w-0">
+                      {brandForm.aboutPhotoUrl ? (
+                        <img
+                          src={brandForm.aboutPhotoUrl}
+                          alt={brandForm.brokerName}
+                          referrerPolicy="no-referrer"
+                          className="h-16 w-auto max-w-[90px] rounded-t-full rounded-b-lg object-contain"
+                        />
+                      ) : (
+                        <div className="h-14 w-14 rounded border border-dashed border-[var(--site-border)] flex items-center justify-center text-[10px] text-[var(--site-text-muted)]">
+                          Sem foto
+                        </div>
+                      )}
+                      <div className="text-[11px] text-[var(--site-text-muted)] min-w-0">
+                        <p className="font-medium text-[var(--site-text)]">Retrato da Seção Sobre</p>
+                        <p>Exibido na Home e em Sobre.</p>
+                      </div>
+                    </div>
+                    {brandForm.aboutPhotoUrl && (
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveBrandAsset('aboutPhotoUrl')}
+                        title="Remover retrato"
+                        className="p-1.5 text-red-700 border border-red-200 rounded hover:bg-red-50 shrink-0"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap gap-3">
+                  <label className="inline-flex items-center gap-1.5 px-3 py-2 border border-[var(--site-border)] rounded cursor-pointer hover:border-[var(--site-accent)]">
+                    <Upload className="w-3.5 h-3.5" />
+                    {uploadingBrandField === 'logoUrl' ? 'Enviando logotipo...' : 'Enviar Logotipo'}
+                    <input type="file" accept="image/*" disabled={Boolean(uploadingBrandField)} className="hidden" onChange={(e) => handleBrandImageUpload(e, 'logoUrl')} />
+                  </label>
+                  <label className="inline-flex items-center gap-1.5 px-3 py-2 border border-[var(--site-border)] rounded cursor-pointer hover:border-[var(--site-accent)]">
+                    <Upload className="w-3.5 h-3.5" />
+                    {uploadingBrandField === 'faviconUrl' ? 'Enviando favicon...' : 'Enviar Favicon'}
+                    <input type="file" accept="image/*" disabled={Boolean(uploadingBrandField)} className="hidden" onChange={(e) => handleBrandImageUpload(e, 'faviconUrl')} />
+                  </label>
+                  <label className="inline-flex items-center gap-1.5 px-3 py-2 border border-[var(--site-border)] rounded cursor-pointer hover:border-[var(--site-accent)]">
+                    <Upload className="w-3.5 h-3.5" />
+                    {uploadingBrandField === 'heroImages'
+                      ? 'Enviando foto(s)...'
+                      : `Adicionar Foto ao Hero (${brandForm.heroImages?.length || 0})`}
+                    <input type="file" accept="image/*" multiple disabled={Boolean(uploadingBrandField)} className="hidden" onChange={(e) => handleBrandImageUpload(e, 'heroImages')} />
+                  </label>
+                  <label className="inline-flex items-center gap-1.5 px-3 py-2 border border-[var(--site-border)] rounded cursor-pointer hover:border-[var(--site-accent)]">
+                    <Upload className="w-3.5 h-3.5" />
+                    {uploadingBrandField === 'aboutPhotoUrl' ? 'Enviando retrato...' : 'Foto da Seção Sobre'}
+                    <input type="file" accept="image/*" disabled={Boolean(uploadingBrandField)} className="hidden" onChange={(e) => handleBrandImageUpload(e, 'aboutPhotoUrl')} />
+                  </label>
+                </div>
+
+                {/* Live Hero Gallery Manager */}
+                {brandForm.heroImages && brandForm.heroImages.length > 0 && (
+                  <div className="space-y-2 pt-2">
+                    <p className="font-medium text-[var(--site-text-muted)]">
+                      Fotos ativas do Hero ({brandForm.heroImages.length}/10 — reordene ou remova em tempo real)
+                    </p>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                      {brandForm.heroImages.map((imgUrl, idx) => (
+                        <div
+                          key={`${imgUrl}-${idx}`}
+                          className="border border-[var(--site-border)] rounded overflow-hidden bg-[var(--site-bg)]"
+                        >
+                          <div className="aspect-[16/10] relative">
+                            <img src={imgUrl} alt={`Hero ${idx + 1}`} className="w-full h-full object-cover" />
+                            <span className="absolute top-1.5 left-1.5 px-1.5 py-0.5 bg-black/70 text-white text-[10px] font-mono rounded">
+                              #{idx + 1}
+                            </span>
+                          </div>
+                          <div className="p-1.5 flex items-center justify-between gap-1">
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                disabled={idx === 0}
+                                onClick={() => handleMoveHeroImage(idx, -1)}
+                                title="Mover para esquerda"
+                                className="p-1 border border-[var(--site-border)] rounded disabled:opacity-30"
+                              >
+                                <ArrowLeft className="w-3 h-3" />
+                              </button>
+                              <button
+                                type="button"
+                                disabled={idx === brandForm.heroImages.length - 1}
+                                onClick={() => handleMoveHeroImage(idx, 1)}
+                                title="Mover para direita"
+                                className="p-1 border border-[var(--site-border)] rounded disabled:opacity-30"
+                              >
+                                <ArrowRight className="w-3 h-3" />
+                              </button>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveHeroImage(idx)}
+                              title="Remover foto do Hero"
+                              className="p-1 text-red-700 border border-red-200 rounded hover:bg-red-50"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </section>
+
+            {/* Hero, Bio, Differentials, SEO, LGPD & Analytics */}
+            <section className="p-6 bg-[var(--site-surface)] border border-[var(--site-border)] rounded-[var(--site-radius)] space-y-4 text-xs">
+              <h3 className="text-sm font-semibold border-b border-[var(--site-border)] pb-2">
+                Textos Editoriais, Diferenciais, SEO, LGPD & Google Tags
+              </h3>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <label className="space-y-1 block sm:col-span-2">
+                  <span>Título Hero Principal</span>
+                  <input
+                    type="text"
+                    value={brandForm.heroTitle}
+                    onChange={(e) => {
+                      setBrandDirty(true);
+                      setBrandForm({ ...brandForm, heroTitle: e.target.value });
+                    }}
+                    className="w-full px-3 py-2 text-sm border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
+                  />
+                </label>
+                <label className="space-y-1 block">
+                  <span>Texto do Botão Hero (CTA)</span>
+                  <input
+                    type="text"
+                    value={brandForm.heroCtaText}
+                    onChange={(e) => {
+                      setBrandDirty(true);
+                      setBrandForm({ ...brandForm, heroCtaText: e.target.value });
+                    }}
+                    className="w-full px-3 py-2 text-sm border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
+                  />
+                </label>
+              </div>
+              <label className="space-y-1 block">
+                <span>Subtítulo Hero</span>
+                <input
+                  type="text"
+                  value={brandForm.heroSubtitle}
+                  onChange={(e) => {
+                    setBrandDirty(true);
+                    setBrandForm({ ...brandForm, heroSubtitle: e.target.value });
+                  }}
+                  className="w-full px-3 py-2 text-sm border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
+                />
+              </label>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <label className="space-y-1 block sm:col-span-2">
+                  <span>Título da Seção Sobre</span>
+                  <input
+                    type="text"
+                    value={brandForm.aboutHeadline}
+                    onChange={(e) => {
+                      setBrandDirty(true);
+                      setBrandForm({ ...brandForm, aboutHeadline: e.target.value });
+                    }}
+                    className="w-full px-3 py-2 text-sm border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
+                  />
+                </label>
+                <label className="space-y-1 block">
+                  <span>Selo de Experiência</span>
+                  <input
+                    type="text"
+                    value={brandForm.aboutExperienceYears}
+                    onChange={(e) => {
+                      setBrandDirty(true);
+                      setBrandForm({ ...brandForm, aboutExperienceYears: e.target.value });
+                    }}
+                    placeholder="Ex.: Desde 2017"
                     className="w-full px-3 py-2 text-sm border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
                   />
                 </label>
               </div>
 
               <label className="space-y-1 block">
-                <span>Regiões atendidas (separadas por vírgula)</span>
-                <input
-                  type="text"
-                  value={regionsInput}
-                  onChange={(e) => setRegionsInput(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
-                />
-              </label>
-
-              {/* Uploads: Logo, Hero Images, About Photo */}
-              <div className="space-y-3 pt-2">
-                {(brandForm.logoUrl || brandForm.aboutPhotoUrl) && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {brandForm.logoUrl && (
-                      <div className="flex items-center gap-4 p-3 rounded border border-[var(--site-border)] bg-[var(--site-bg)]">
-                        <img
-                          src={brandForm.logoUrl}
-                          alt={brandForm.brandName}
-                          referrerPolicy="no-referrer"
-                          className="h-14 w-auto object-contain bg-transparent"
-                        />
-                        <div className="text-[11px] text-[var(--site-text-muted)]">
-                          <p className="font-medium text-[var(--site-text)]">Logotipo atual (fundo transparente)</p>
-                          <p>Exibido no cabeçalho, rodapé e área administrativa.</p>
-                        </div>
-                      </div>
-                    )}
-                    {brandForm.aboutPhotoUrl && (
-                      <div className="flex items-center gap-4 p-3 rounded border border-[var(--site-border)] bg-[var(--site-bg)]">
-                        <img
-                          src={brandForm.aboutPhotoUrl}
-                          alt={brandForm.brokerName}
-                          referrerPolicy="no-referrer"
-                          className="h-16 w-auto rounded-t-full rounded-b-lg object-contain"
-                        />
-                        <div className="text-[11px] text-[var(--site-text-muted)]">
-                          <p className="font-medium text-[var(--site-text)]">Retrato da Seção Sobre</p>
-                          <p>Exibido integralmente na página inicial e em Sobre.</p>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-                <div className="flex flex-wrap gap-3">
-                  <label className="inline-flex items-center gap-1.5 px-3 py-2 border border-[var(--site-border)] rounded cursor-pointer">
-                    <Upload className="w-3.5 h-3.5" />
-                    Enviar Logotipo
-                    <input type="file" accept="image/*" className="hidden" onChange={(e) => handleBrandImageUpload(e, 'logoUrl')} />
-                  </label>
-                  <label className="inline-flex items-center gap-1.5 px-3 py-2 border border-[var(--site-border)] rounded cursor-pointer">
-                    <Upload className="w-3.5 h-3.5" />
-                    Adicionar Foto ao Hero ({brandForm.heroImages?.length || 0})
-                    <input type="file" accept="image/*" multiple className="hidden" onChange={(e) => handleBrandImageUpload(e, 'heroImages')} />
-                  </label>
-                  <label className="inline-flex items-center gap-1.5 px-3 py-2 border border-[var(--site-border)] rounded cursor-pointer">
-                    <Upload className="w-3.5 h-3.5" />
-                    Foto da Seção Sobre
-                    <input type="file" accept="image/*" className="hidden" onChange={(e) => handleBrandImageUpload(e, 'aboutPhotoUrl')} />
-                  </label>
-                </div>
-              </div>
-            </section>
-
-            {/* Hero, Bio, SEO & Analytics */}
-            <section className="p-6 bg-[var(--site-surface)] border border-[var(--site-border)] rounded-[var(--site-radius)] space-y-4 text-xs">
-              <h3 className="text-sm font-semibold border-b border-[var(--site-border)] pb-2">
-                Editorial, SEO & Google Tags
-              </h3>
-              <label className="space-y-1 block">
-                <span>Título Hero Principal</span>
-                <input
-                  type="text"
-                  value={brandForm.heroTitle}
-                  onChange={(e) => setBrandForm({ ...brandForm, heroTitle: e.target.value })}
-                  className="w-full px-3 py-2 text-sm border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
-                />
-              </label>
-              <label className="space-y-1 block">
-                <span>Subtítulo Hero</span>
-                <input
-                  type="text"
-                  value={brandForm.heroSubtitle}
-                  onChange={(e) => setBrandForm({ ...brandForm, heroSubtitle: e.target.value })}
-                  className="w-full px-3 py-2 text-sm border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
-                />
-              </label>
-              <label className="space-y-1 block">
                 <span>Biografia / Apresentação Sobre</span>
                 <textarea
                   rows={3}
                   value={brandForm.aboutBio}
-                  onChange={(e) => setBrandForm({ ...brandForm, aboutBio: e.target.value })}
+                  onChange={(e) => {
+                    setBrandDirty(true);
+                    setBrandForm({ ...brandForm, aboutBio: e.target.value });
+                  }}
                   className="w-full px-3 py-2 text-sm border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
                 />
               </label>
@@ -2541,17 +3171,89 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                 <textarea
                   rows={3}
                   value={specialtiesInput}
-                  onChange={(e) => setSpecialtiesInput(e.target.value)}
+                  onChange={(e) => {
+                    setBrandDirty(true);
+                    setSpecialtiesInput(e.target.value);
+                  }}
                   className="w-full px-3 py-2 text-sm border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
                 />
               </label>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+
+              {/* Differentials Editor */}
+              <div className="space-y-3 pt-2 border-t border-[var(--site-border)]">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold">Diferenciais da Assessoria ({brandForm.differentials?.length || 0})</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBrandDirty(true);
+                      setBrandForm((prev) => ({
+                        ...prev,
+                        differentials: [...(prev.differentials || []), { title: '', description: '' }].slice(0, 12),
+                      }));
+                    }}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 border border-[var(--site-border)] rounded hover:border-[var(--site-accent)]"
+                  >
+                    <Plus className="w-3 h-3" />
+                    Adicionar Diferencial
+                  </button>
+                </div>
+                <div className="space-y-2">
+                  {(brandForm.differentials || []).map((diff, idx) => (
+                    <div key={idx} className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-start p-2.5 rounded border border-[var(--site-border)] bg-[var(--site-bg)]">
+                      <input
+                        type="text"
+                        value={diff.title}
+                        onChange={(e) => {
+                          setBrandDirty(true);
+                          const next = [...(brandForm.differentials || [])];
+                          next[idx] = { ...next[idx], title: e.target.value };
+                          setBrandForm({ ...brandForm, differentials: next });
+                        }}
+                        placeholder="Título do diferencial"
+                        className="sm:col-span-4 px-2.5 py-1.5 text-xs border border-[var(--site-border)] rounded bg-[var(--site-surface)]"
+                      />
+                      <input
+                        type="text"
+                        value={diff.description}
+                        onChange={(e) => {
+                          setBrandDirty(true);
+                          const next = [...(brandForm.differentials || [])];
+                          next[idx] = { ...next[idx], description: e.target.value };
+                          setBrandForm({ ...brandForm, differentials: next });
+                        }}
+                        placeholder="Descrição objetiva"
+                        className="sm:col-span-7 px-2.5 py-1.5 text-xs border border-[var(--site-border)] rounded bg-[var(--site-surface)]"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setBrandDirty(true);
+                          setBrandForm((prev) => ({
+                            ...prev,
+                            differentials: (prev.differentials || []).filter((_, i) => i !== idx),
+                          }));
+                        }}
+                        title="Remover diferencial"
+                        className="sm:col-span-1 p-1.5 text-red-700 border border-red-200 rounded justify-self-end"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-[var(--site-border)]">
                 <label className="space-y-1 block">
                   <span>SEO Title</span>
                   <input
                     type="text"
                     value={brandForm.seoTitle}
-                    onChange={(e) => setBrandForm({ ...brandForm, seoTitle: e.target.value })}
+                    onChange={(e) => {
+                      setBrandDirty(true);
+                      setBrandForm({ ...brandForm, seoTitle: e.target.value });
+                    }}
                     className="w-full px-3 py-2 text-sm border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
                   />
                 </label>
@@ -2560,8 +3262,23 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                   <input
                     type="text"
                     value={brandForm.customDomain}
-                    onChange={(e) => setBrandForm({ ...brandForm, customDomain: e.target.value })}
+                    onChange={(e) => {
+                      setBrandDirty(true);
+                      setBrandForm({ ...brandForm, customDomain: e.target.value });
+                    }}
                     placeholder="ex.: www.ivyoliveiraimoveis.com.br"
+                    className="w-full px-3 py-2 text-sm border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
+                  />
+                </label>
+                <label className="space-y-1 block sm:col-span-2">
+                  <span>SEO Meta Description</span>
+                  <input
+                    type="text"
+                    value={brandForm.seoDescription}
+                    onChange={(e) => {
+                      setBrandDirty(true);
+                      setBrandForm({ ...brandForm, seoDescription: e.target.value });
+                    }}
                     className="w-full px-3 py-2 text-sm border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
                   />
                 </label>
@@ -2570,7 +3287,10 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                   <input
                     type="text"
                     value={brandForm.ga4Id}
-                    onChange={(e) => setBrandForm({ ...brandForm, ga4Id: e.target.value })}
+                    onChange={(e) => {
+                      setBrandDirty(true);
+                      setBrandForm({ ...brandForm, ga4Id: e.target.value });
+                    }}
                     className="w-full px-3 py-2 text-sm font-mono border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
                   />
                 </label>
@@ -2579,10 +3299,61 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                   <input
                     type="text"
                     value={brandForm.gtmId}
-                    onChange={(e) => setBrandForm({ ...brandForm, gtmId: e.target.value })}
+                    onChange={(e) => {
+                      setBrandDirty(true);
+                      setBrandForm({ ...brandForm, gtmId: e.target.value });
+                    }}
                     className="w-full px-3 py-2 text-sm font-mono border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
                   />
                 </label>
+                <label className="space-y-1 block">
+                  <span>Google Search Console Verification</span>
+                  <input
+                    type="text"
+                    value={brandForm.gscVerification}
+                    onChange={(e) => {
+                      setBrandDirty(true);
+                      setBrandForm({ ...brandForm, gscVerification: e.target.value });
+                    }}
+                    className="w-full px-3 py-2 text-sm font-mono border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
+                  />
+                </label>
+                <label className="space-y-1 block">
+                  <span>Google Ads ID (AW-XXXXXXXX)</span>
+                  <input
+                    type="text"
+                    value={brandForm.googleAdsId}
+                    onChange={(e) => {
+                      setBrandDirty(true);
+                      setBrandForm({ ...brandForm, googleAdsId: e.target.value });
+                    }}
+                    className="w-full px-3 py-2 text-sm font-mono border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
+                  />
+                </label>
+              </div>
+
+              <label className="space-y-1 block">
+                <span>Política de Privacidade & LGPD (página /privacidade)</span>
+                <textarea
+                  rows={3}
+                  value={brandForm.lgpdPrivacyText}
+                  onChange={(e) => {
+                    setBrandDirty(true);
+                    setBrandForm({ ...brandForm, lgpdPrivacyText: e.target.value });
+                  }}
+                  className="w-full px-3 py-2 text-sm border border-[var(--site-border)] rounded bg-[var(--site-bg)]"
+                />
+              </label>
+
+              <div className="flex justify-end pt-2">
+                <button
+                  type="submit"
+                  disabled={savingBrand}
+                  className="inline-flex items-center gap-2 px-6 py-2.5 text-xs font-medium bg-[var(--site-text)] text-[var(--site-surface)] rounded-[var(--site-radius)] disabled:opacity-60"
+                >
+                  <Check className="w-4 h-4" />
+                  {savingBrand ? 'Salvando...' : 'Salvar Alterações no Site'}
+                </button>
               </div>
             </section>
           </form>
@@ -2815,6 +3586,7 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
         <PropertyEditorModal
           existingProperty={editingProperty}
           onClose={() => setEditingProperty(undefined)}
+          onSaved={(msg) => showNotice('ok', msg)}
         />
       )}
     </div>
