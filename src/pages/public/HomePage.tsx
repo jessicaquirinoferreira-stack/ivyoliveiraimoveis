@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import gsap from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import Lenis from 'lenis';
@@ -22,10 +22,16 @@ import {
 import { Development, Property, Testimonial } from '../../types/realestate';
 import { PropertyCard } from '../../components/properties/PropertyCard';
 import { LeadCaptureForm } from '../../components/leads/LeadCaptureForm';
-import { ArchitecturalPavilionCanvas } from '../../components/three/ArchitecturalPavilionCanvas';
 import { MagneticAction } from '../../components/motion/EditorialMotion';
 import { buildWhatsAppUrl, formatCurrencyBRL } from '../../utils/formatters';
 import { applySeoMetadata } from '../../utils/seo';
+
+// Defer heavy Three.js WebGL bundle until visitor nears the 3D section
+const ArchitecturalPavilionCanvas = lazy(() =>
+  import('../../components/three/ArchitecturalPavilionCanvas').then((m) => ({
+    default: m.ArchitecturalPavilionCanvas,
+  }))
+);
 
 gsap.registerPlugin(ScrollTrigger);
 
@@ -33,36 +39,177 @@ interface HomePageProps {
   onNavigate: (to: string) => void;
 }
 
-const REGION_PROFILES: Record<string, { subtitle: string; focus: string; image: string }> = {
-  'Zona Sul': {
-    subtitle: 'Tradição arquitetônica entre o oceano e a Mata Atlântica.',
-    focus: 'Apartamentos de planta generosa, vistas panorâmicas e ruas arborizadas.',
-    image: '/assets/regions/zona-sul.jpg',
+interface RegionProfile {
+  zone: 'Zona Norte' | 'Zona Sul' | 'Zona Oeste';
+  landmark: string;
+  subtitle: string;
+  image: string;
+}
+
+function normalizeRegionKey(name: string): string {
+  return name
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+const REGION_PROFILES: Record<string, RegionProfile> = {
+  meier: {
+    zone: 'Zona Norte',
+    landmark: 'Jardim do Méier',
+    subtitle: 'Coreto histórico, polo comercial tradicional e mobilidade central.',
+    image: '/assets/regions/meier.jpg',
   },
-  Leblon: {
-    subtitle: 'Exclusividade costeira, gastronomia autoral e alta liquidez patrimonial.',
-    focus: 'Coberturas duplex, edifícios boutique e quadra da praia.',
-    image: '/assets/regions/leblon.jpg',
+  cachambi: {
+    zone: 'Zona Norte',
+    landmark: 'Av. Dom Hélder Câmara',
+    subtitle: 'Residenciais modernos próximos ao NorteShopping e vias expressas.',
+    image: '/assets/regions/cachambi.jpg',
   },
-  Ipanema: {
-    subtitle: 'Ícone modernista com vida cultural vibrante e luz atlântica.',
-    focus: 'Residências assinadas com varanda integrada e arquitetura atemporal.',
+  'engenho de dentro': {
+    zone: 'Zona Norte',
+    landmark: 'Estádio Nilton Santos',
+    subtitle: 'Entorno do Engenhão com ruas arborizadas e acesso ferroviário.',
+    image: '/assets/regions/engenho-de-dentro.jpg',
+  },
+  'engenho novo': {
+    zone: 'Zona Norte',
+    landmark: 'Colégio Pedro II',
+    subtitle: 'Tradição educacional, casarios clássicos e fácil conexão ao Centro.',
+    image: '/assets/regions/engenho-novo.jpg',
+  },
+  pilares: {
+    zone: 'Zona Norte',
+    landmark: 'Estação de Pilares',
+    subtitle: 'Bairro familiar integrado à Linha Amarela e comércio local ativo.',
+    image: '/assets/regions/pilares.jpg',
+  },
+  piedade: {
+    zone: 'Zona Norte',
+    landmark: 'Capela N. Sra. da Piedade',
+    subtitle: 'Arquitetura tradicional carioca e acesso direto à Av. Suburbana.',
+    image: '/assets/regions/piedade.jpg',
+  },
+  abolicao: {
+    zone: 'Zona Norte',
+    landmark: 'Av. Dom Hélder Câmara',
+    subtitle: 'Localização estratégica junto à Linha Amarela e condomínios práticos.',
+    image: '/assets/regions/abolicao.jpg',
+  },
+  'todos os santos': {
+    zone: 'Zona Norte',
+    landmark: 'Estação Todos os Santos',
+    subtitle: 'Ruas residenciais valorizadas vizinhas ao coração do Méier.',
+    image: '/assets/regions/todos-os-santos.jpg',
+  },
+  higienopolis: {
+    zone: 'Zona Norte',
+    landmark: 'Polo Residencial',
+    subtitle: 'Praticidade urbana com acesso rápido à Linha Amarela e metrô.',
+    image: '/assets/regions/higienopolis.jpg',
+  },
+  bonsucesso: {
+    zone: 'Zona Norte',
+    landmark: 'Praça das Nações',
+    subtitle: 'Forte infraestrutura de serviços, ensino superior e transporte.',
+    image: '/assets/regions/bonsucesso.jpg',
+  },
+  cascadura: {
+    zone: 'Zona Norte',
+    landmark: 'Estação de Cascadura',
+    subtitle: 'Entroncamento tradicional com comércio consolidado e mobilidade.',
+    image: '/assets/regions/cascadura.jpg',
+  },
+  copacabana: {
+    zone: 'Zona Sul',
+    landmark: 'Praia de Copacabana',
+    subtitle: 'Calçadão icônico, orla atlântica e alta liquidez residencial.',
+    image: '/assets/regions/copacabana.jpg',
+  },
+  ipanema: {
+    zone: 'Zona Sul',
+    landmark: 'Praia de Ipanema · Arpoador',
+    subtitle: 'Orla consagrada, vida cultural vibrante e imóveis autorais.',
     image: '/assets/regions/ipanema.jpg',
   },
-  Lagoa: {
-    subtitle: 'Silêncio contemplativo com vista frontal para o espelho d’água e Cristo Redentor.',
-    focus: 'Plantas amplas, iluminação natural abundante e ventilação cruzada.',
+  flamengo: {
+    zone: 'Zona Sul',
+    landmark: 'Parque do Flamengo',
+    subtitle: 'Aterro arborizado com vista para o Pão de Açúcar e Baía de Guanabara.',
+    image: '/assets/regions/flamengo.jpg',
+  },
+  botafogo: {
+    zone: 'Zona Sul',
+    landmark: 'Enseada de Botafogo',
+    subtitle: 'Cartão-postal com vista do Pão de Açúcar e cena gastronômica.',
+    image: '/assets/regions/botafogo.jpg',
+  },
+  laranjeiras: {
+    zone: 'Zona Sul',
+    landmark: 'Palácio das Laranjeiras',
+    subtitle: 'Parque Guinle, casarões preservados e atmosfera residencial tranquila.',
+    image: '/assets/regions/laranjeiras.jpg',
+  },
+  catete: {
+    zone: 'Zona Sul',
+    landmark: 'Palácio do Catete',
+    subtitle: 'Museu da República, jardins históricos e conexão imediata ao metrô.',
+    image: '/assets/regions/catete.jpg',
+  },
+  'barra da tijuca': {
+    zone: 'Zona Oeste',
+    landmark: 'Orla da Barra da Tijuca',
+    subtitle: 'Praia extensa, condomínios com lazer completo e lançamentos.',
+    image: '/assets/regions/barra-da-tijuca.jpg',
+  },
+  recreio: {
+    zone: 'Zona Oeste',
+    landmark: 'Pedra do Pontal',
+    subtitle: 'Praias preservadas, ciclovias e apartamentos amplos perto do mar.',
+    image: '/assets/regions/recreio.jpg',
+  },
+  'recreio dos bandeirantes': {
+    zone: 'Zona Oeste',
+    landmark: 'Pedra do Pontal',
+    subtitle: 'Praias preservadas, ciclovias e apartamentos amplos perto do mar.',
+    image: '/assets/regions/recreio.jpg',
+  },
+  'vargem grande': {
+    zone: 'Zona Oeste',
+    landmark: 'Cachoeiras de Vargem Grande',
+    subtitle: 'Casas em terrenos amplos cercadas pelo verde do Parque da Pedra Branca.',
+    image: '/assets/regions/vargem-grande.jpg',
+  },
+  'vargem pequena': {
+    zone: 'Zona Oeste',
+    landmark: 'Capela N. Sra. de Monserrate',
+    subtitle: 'Condomínios de casas contemporâneas entre montanhas e tranquilidade.',
+    image: '/assets/regions/vargem-pequena.jpg',
+  },
+  'zona sul': {
+    zone: 'Zona Sul',
+    landmark: 'Enseada & Pão de Açúcar',
+    subtitle: 'Tradição arquitetônica entre o oceano e a Mata Atlântica.',
+    image: '/assets/regions/zona-sul.jpg',
+  },
+  leblon: {
+    zone: 'Zona Sul',
+    landmark: 'Mirante do Leblon',
+    subtitle: 'Exclusividade costeira, gastronomia autoral e alta liquidez.',
+    image: '/assets/regions/leblon.jpg',
+  },
+  lagoa: {
+    zone: 'Zona Sul',
+    landmark: 'Lagoa Rodrigo de Freitas',
+    subtitle: 'Espelho d’água emoldurado pelo Cristo Redentor e ciclovia.',
     image: '/assets/regions/lagoa.jpg',
   },
-  'São Conrado': {
+  'sao conrado': {
+    zone: 'Zona Sul',
+    landmark: 'Pedra da Gávea',
     subtitle: 'Privacidade entre a Pedra da Gávea e o mar aberto.',
-    focus: 'Casas suspensas, terrenos reservados e condomínios com segurança 24h.',
     image: '/assets/regions/sao-conrado.jpg',
-  },
-  'Barra da Tijuca': {
-    subtitle: 'Condomínios contemporâneos, amplas áreas de lazer e novos lançamentos.',
-    focus: 'Casas contemporâneas de grande metragem e residenciais de frente para o mar.',
-    image: '/assets/regions/barra-da-tijuca.jpg',
   },
 };
 
@@ -74,12 +221,32 @@ export function HomePage({ onNavigate }: HomePageProps) {
   const [loading, setLoading] = useState(true);
   const [heroSlide, setHeroSlide] = useState(0);
 
-  // Quick search state
+  // Quick search & zone filter state
   const [qTx, setQTx] = useState('');
   const [qType, setQType] = useState('');
   const [qRegion, setQRegion] = useState('');
+  const [activeZoneFilter, setActiveZoneFilter] = useState<'Todas' | 'Zona Norte' | 'Zona Sul' | 'Zona Oeste'>('Todas');
 
   const pageRef = useRef<HTMLDivElement | null>(null);
+  const threeHostRef = useRef<HTMLDivElement | null>(null);
+  const [shouldMount3D, setShouldMount3D] = useState(false);
+
+  // Defer mounting Three.js WebGL until visitor approaches the 3D architectural section
+  useEffect(() => {
+    const el = threeHostRef.current;
+    if (!el || shouldMount3D) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          setShouldMount3D(true);
+          io.disconnect();
+        }
+      },
+      { rootMargin: '420px 0px' }
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [shouldMount3D]);
 
   useEffect(() => {
     applySeoMetadata({
@@ -113,38 +280,117 @@ export function HomePage({ onNavigate }: HomePageProps) {
     };
   }, [tenant.id]);
 
-  // Hero slideshow interval
-  const heroSlides = tenant.heroImages?.length
-    ? tenant.heroImages
-    : ['/src/assets/images/hero_rio_architecture_1795532252718.jpg'];
+  // Dynamic Hero Slides: automatically displays photos of published properties with smooth transitions
+  const heroSlides = useMemo(() => {
+    interface HeroSlideItem {
+      src: string;
+      alt: string;
+      propertyTitle?: string;
+      neighborhood?: string;
+      slug?: string;
+      price?: number;
+    }
+
+    const slides: HeroSlideItem[] = [];
+    const seenUrls = new Set<string>();
+    const MAX_SLIDES = 10;
+
+    const orderedProps = [
+      ...properties.filter((p) => p.featured),
+      ...properties.filter((p) => !p.featured),
+    ];
+
+    const pushSlide = (url: string | undefined, prop?: Property) => {
+      const clean = (url || '').trim();
+      if (!clean || seenUrls.has(clean) || slides.length >= MAX_SLIDES) return;
+      seenUrls.add(clean);
+      slides.push({
+        src: clean,
+        alt: prop
+          ? `${prop.title} — ${prop.neighborhood}, ${prop.city}`
+          : `${tenant.brandName} — ${tenant.city}`,
+        propertyTitle: prop?.title,
+        neighborhood: prop?.neighborhood,
+        slug: prop?.slug,
+        price: prop?.price,
+      });
+    };
+
+    // Pass 1: Cover photo of every published property (featured first)
+    for (const prop of orderedProps) {
+      pushSlide(prop.coverImage || prop.images?.[0]?.url, prop);
+    }
+
+    // Pass 2: Additional gallery photos from published properties so even 1-3 listings have rich transitions
+    if (slides.length > 0 && slides.length < 8) {
+      for (const prop of orderedProps) {
+        for (const img of prop.images || []) {
+          if (slides.length >= 8) break;
+          pushSlide(img.url, prop);
+        }
+      }
+    }
+
+    // Fallback: configured tenant hero images when no properties with photos are published yet
+    if (slides.length === 0) {
+      const fallbackUrls = tenant.heroImages?.length
+        ? tenant.heroImages
+        : ['/src/assets/images/hero_rio_architecture_1795532252718.jpg'];
+      for (const url of fallbackUrls) {
+        pushSlide(url);
+      }
+    }
+
+    return slides;
+  }, [properties, tenant.heroImages, tenant.brandName, tenant.city]);
 
   useEffect(() => {
     setHeroSlide((prev) => (heroSlides.length > 0 ? prev % heroSlides.length : 0));
     if (heroSlides.length <= 1) return;
     const timer = window.setInterval(() => {
       setHeroSlide((prev) => (prev + 1) % heroSlides.length);
-    }, 6800);
+    }, 5500);
     return () => window.clearInterval(timer);
   }, [heroSlides.length]);
 
-  // Lenis + Multi-Layer GSAP ScrollTrigger orchestration respecting prefers-reduced-motion
+  // Preload upcoming slide image for seamless zero-blink transitions
+  useEffect(() => {
+    if (heroSlides.length <= 1) return;
+    const nextSlide = heroSlides[(heroSlide + 1) % heroSlides.length];
+    if (!nextSlide?.src) return;
+    const preloader = new Image();
+    preloader.decoding = 'async';
+    preloader.src = nextSlide.src;
+  }, [heroSlide, heroSlides]);
+
+  const activeHeroSlide = heroSlides[heroSlide] || heroSlides[0];
+
+  // Lenis (desktop pointer only) + Multi-Layer GSAP ScrollTrigger orchestration respecting prefers-reduced-motion
   useEffect(() => {
     const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     if (prefersReduced) return;
 
-    const lenis = new Lenis({
-      duration: 1.12,
-      easing: (t) => Math.min(1, 1.001 - Math.pow(2, -10 * t)),
-      smoothWheel: true,
-    });
+    const isTouchOrCompact =
+      window.matchMedia('(pointer: coarse)').matches || window.innerWidth < 1024;
 
+    let lenis: Lenis | null = null;
     let rafId = 0;
-    const raf = (time: number) => {
-      lenis.raf(time);
+
+    if (!isTouchOrCompact) {
+      document.documentElement.style.scrollBehavior = 'auto';
+      lenis = new Lenis({
+        duration: 0.9,
+        easing: (t) => Math.min(1, 1.001 - Math.pow(2, -10 * t)),
+        smoothWheel: true,
+      });
+
+      const raf = (time: number) => {
+        lenis?.raf(time);
+        rafId = requestAnimationFrame(raf);
+      };
       rafId = requestAnimationFrame(raf);
-    };
-    rafId = requestAnimationFrame(raf);
-    lenis.on('scroll', ScrollTrigger.update);
+      lenis.on('scroll', ScrollTrigger.update);
+    }
 
     const ctx = gsap.context(() => {
       // 1. Choreographed Hero Entrance Timeline
@@ -216,17 +462,17 @@ export function HomePage({ onNavigate }: HomePageProps) {
         });
       });
 
-      // 5. Staggered Card Reveal for Regions Grid (contained cleanly inside viewport)
+      // 5. Staggered Card Reveal for Regions Grid (compact timing so all cards reveal smoothly)
       gsap.from('.region-grid-card', {
-        y: 22,
+        y: 16,
         opacity: 0,
-        duration: 0.7,
-        stagger: 0.07,
+        duration: 0.5,
+        stagger: 0.025,
         ease: 'power2.out',
         clearProps: 'transform,opacity',
         scrollTrigger: {
           trigger: '.regions-story-section',
-          start: 'top 82%',
+          start: 'top 90%',
           once: true,
         },
       });
@@ -264,8 +510,9 @@ export function HomePage({ onNavigate }: HomePageProps) {
     }, pageRef);
 
     return () => {
-      cancelAnimationFrame(rafId);
-      lenis.destroy();
+      if (rafId) cancelAnimationFrame(rafId);
+      lenis?.destroy();
+      document.documentElement.style.scrollBehavior = '';
       ctx.revert();
     };
   }, []);
@@ -284,27 +531,34 @@ export function HomePage({ onNavigate }: HomePageProps) {
 
   const curatedRegions = useMemo(() => {
     const fallbackImages = [
-      '/src/assets/images/hero_rio_architecture_1795532252718.jpg',
-      '/src/assets/images/hero_penthouse_living_1795532252931.jpg',
-      '/src/assets/images/editorial_development_1795532253234.jpg',
-      '/src/assets/images/editorial_advisory_studio_1795532253992.jpg',
+      '/assets/regions/copacabana.jpg',
+      '/assets/regions/barra-da-tijuca.jpg',
+      '/assets/regions/meier.jpg',
+      '/assets/regions/ipanema.jpg',
     ];
-    const source = tenant.regions?.length ? tenant.regions : ['Zona Sul', 'Leblon', 'Ipanema', 'Barra da Tijuca'];
-    return source.slice(0, 6).map((regionName, idx) => {
-      const profile = REGION_PROFILES[regionName];
+    const source = tenant.regions?.length ? tenant.regions : Object.keys(REGION_PROFILES).slice(0, 21);
+    return source.map((regionName, idx) => {
+      const normalized = normalizeRegionKey(regionName);
+      const profile = REGION_PROFILES[normalized];
       const count = properties.filter((p) =>
-        `${p.neighborhood} ${p.city} ${p.address}`.toLowerCase().includes(regionName.toLowerCase())
+        normalizeRegionKey(`${p.neighborhood} ${p.city} ${p.address}`).includes(normalized)
       ).length;
       return {
         name: regionName,
+        zone: profile?.zone || 'Rio de Janeiro',
+        landmark: profile?.landmark || regionName,
         subtitle:
           profile?.subtitle || `Curadoria residencial e oportunidades exclusivas em ${regionName}.`,
-        focus: profile?.focus || 'Seleção técnica de plantas, localização e potencial patrimonial.',
         image: profile?.image || fallbackImages[idx % fallbackImages.length],
         count,
       };
     });
   }, [tenant.regions, properties]);
+
+  const filteredRegions = useMemo(() => {
+    if (activeZoneFilter === 'Todas') return curatedRegions;
+    return curatedRegions.filter((r) => r.zone === activeZoneFilter);
+  }, [curatedRegions, activeZoneFilter]);
 
   const handleQuickSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -325,19 +579,29 @@ export function HomePage({ onNavigate }: HomePageProps) {
     <div ref={pageRef} className="overflow-x-clip">
       {/* 1. Cinematic Multi-Layer Architectural Hero */}
       <section className="hero-section relative min-h-[88vh] flex items-end overflow-hidden bg-neutral-950 text-white">
-        {/* Background Layer with Smooth Crossfade & Scroll Parallax */}
+        {/* Background Layer with Smooth Property Crossfade, Ken Burns Motion & Scroll Parallax */}
         <div className="absolute inset-0">
-          {heroSlides.map((src, idx) => (
-            <img
-              key={src + idx}
-              src={src}
-              alt={`${tenant.brandName} — ${tenant.city}`}
-              referrerPolicy="no-referrer"
-              className={`hero-parallax-bg absolute inset-0 w-full h-[118%] -top-[9%] object-cover transition-opacity duration-[1800ms] ease-out will-change-transform ${
-                idx === heroSlide ? 'opacity-100' : 'opacity-0'
-              }`}
-            />
-          ))}
+          <div className="hero-parallax-bg absolute inset-0 w-full h-[118%] -top-[9%] will-change-transform">
+            {heroSlides.map((slide, idx) => {
+              const isActive = idx === heroSlide;
+              return (
+                <img
+                  key={slide.src + idx}
+                  src={slide.src}
+                  alt={slide.alt}
+                  loading={idx === 0 ? 'eager' : 'lazy'}
+                  decoding="async"
+                  fetchPriority={idx === 0 ? 'high' : 'low'}
+                  referrerPolicy="no-referrer"
+                  className={`absolute inset-0 w-full h-full object-cover will-change-[opacity,transform] transition-[opacity,transform] ease-out ${
+                    isActive
+                      ? 'opacity-100 scale-[1.06] duration-[5800ms] [transition-property:opacity,transform] [transition-duration:1500ms,6200ms]'
+                      : 'opacity-0 scale-100 [transition-property:opacity,transform] [transition-duration:1500ms,1500ms]'
+                  }`}
+                />
+              );
+            })}
+          </div>
           {/* Layered Architectural Contrast Scrim (>= 4.5:1 text legibility) */}
           <div className="absolute inset-0 bg-gradient-to-t from-black/88 via-black/48 to-black/30" />
           <div className="absolute inset-0 bg-gradient-to-r from-black/55 via-transparent to-transparent" />
@@ -412,22 +676,42 @@ export function HomePage({ onNavigate }: HomePageProps) {
             </div>
           </div>
 
-          {/* Right Editorial Slide Index & Scroll Continuity Cue */}
-          <div className="hero-meta-rail lg:col-span-4 flex lg:flex-col items-center lg:items-end justify-between gap-6">
+          {/* Right Editorial Slide Index, Active Property Link & Scroll Continuity Cue */}
+          <div className="hero-meta-rail lg:col-span-4 flex flex-col items-start lg:items-end justify-end gap-5">
+            {activeHeroSlide?.propertyTitle && activeHeroSlide?.slug && (
+              <button
+                type="button"
+                onClick={() => onNavigate(`/imovel/${activeHeroSlide.slug}`)}
+                className="group text-left lg:text-right transition-opacity duration-500 cursor-pointer max-w-xs"
+              >
+                <span className="block text-[10px] font-mono uppercase tracking-[0.2em] text-white/65">
+                  Em cena{activeHeroSlide.neighborhood ? ` · ${activeHeroSlide.neighborhood}` : ''}
+                </span>
+                <span className="mt-1 inline-flex items-center gap-1.5 font-editorial text-lg sm:text-xl font-medium text-white group-hover:text-[#E7C796] transition-colors leading-snug">
+                  <span className="line-clamp-1">{activeHeroSlide.propertyTitle}</span>
+                  <ArrowUpRight className="w-4 h-4 shrink-0 opacity-80 transition-transform duration-300 group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
+                </span>
+              </button>
+            )}
+
             {heroSlides.length > 1 && (
               <div className="flex items-center gap-4">
                 <span className="font-mono text-xs tabular-nums text-white/75">
-                  0{heroSlide + 1} / 0{heroSlides.length}
+                  {String(heroSlide + 1).padStart(2, '0')} / {String(heroSlides.length).padStart(2, '0')}
                 </span>
-                <div className="flex items-center gap-2">
-                  {heroSlides.map((_, idx) => (
+                <div className="flex items-center gap-1.5">
+                  {heroSlides.map((slide, idx) => (
                     <button
-                      key={idx}
+                      key={slide.src + idx}
                       type="button"
-                      aria-label={`Visualizar cena ${idx + 1}`}
+                      aria-label={
+                        slide.propertyTitle
+                          ? `Visualizar ${slide.propertyTitle}`
+                          : `Visualizar cena ${idx + 1}`
+                      }
                       onClick={() => setHeroSlide(idx)}
                       className={`h-1 rounded-full transition-all duration-500 cursor-pointer ${
-                        idx === heroSlide ? 'w-10 bg-white' : 'w-4 bg-white/35 hover:bg-white/65'
+                        idx === heroSlide ? 'w-9 bg-white' : 'w-3.5 bg-white/35 hover:bg-white/65'
                       }`}
                     />
                   ))}
@@ -582,63 +866,92 @@ export function HomePage({ onNavigate }: HomePageProps) {
         )}
       </section>
 
-      {/* 4. Curated Rio Regions Grid (02 · Geografia Arquitetônica) */}
+      {/* 4. Curated Rio Regions Compact Grid (02 · Geografia Arquitetônica) */}
       <section className="regions-story-section border-y border-[var(--site-border)] bg-[var(--site-surface)] editorial-grain">
-        <div className="max-w-7xl mx-auto px-6 py-16 sm:py-20 space-y-10">
-          <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 border-b border-[var(--site-border)] pb-8">
-            <div className="space-y-2.5 max-w-2xl">
+        <div className="max-w-7xl mx-auto px-6 py-14 sm:py-16 space-y-8">
+          <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-6 border-b border-[var(--site-border)] pb-7">
+            <div className="space-y-2 max-w-2xl">
               <p className="text-[11px] font-mono uppercase tracking-[0.18em] text-[var(--site-accent)]">
                 02 · Geografia de Atuação
               </p>
-              <h2 className="font-editorial text-4xl sm:text-5xl font-semibold tracking-tight text-balance">
+              <h2 className="font-editorial text-3xl sm:text-4xl lg:text-[2.75rem] font-semibold tracking-tight text-balance">
                 Bairros emblemáticos de {tenant.city}
               </h2>
             </div>
-            <p className="text-sm text-[var(--site-text-muted)] max-w-md leading-relaxed">
-              Selecione uma região para filtrar instantaneamente as oportunidades disponíveis ou solicitar busca reservada fora de portais.
-            </p>
+            <div className="flex flex-col sm:items-end gap-3">
+              <p className="text-xs sm:text-sm text-[var(--site-text-muted)] max-w-md lg:text-right leading-relaxed">
+                Pontos turísticos e regiões onde atuamos nas Zonas Norte, Sul e Oeste. Selecione um bairro para filtrar imóveis.
+              </p>
+              <div className="flex flex-wrap gap-1.5" role="group" aria-label="Filtrar bairros por zona">
+                {(['Todas', 'Zona Norte', 'Zona Sul', 'Zona Oeste'] as const).map((zoneOption) => {
+                  const zoneCount =
+                    zoneOption === 'Todas'
+                      ? curatedRegions.length
+                      : curatedRegions.filter((r) => r.zone === zoneOption).length;
+                  if (zoneOption !== 'Todas' && zoneCount === 0) return null;
+                  const active = activeZoneFilter === zoneOption;
+                  return (
+                    <button
+                      key={zoneOption}
+                      type="button"
+                      onClick={() => setActiveZoneFilter(zoneOption)}
+                      className={`px-3 py-1.5 text-[11px] font-mono uppercase tracking-[0.1em] border rounded-[var(--site-radius)] transition-colors cursor-pointer ${
+                        active
+                          ? 'bg-[var(--site-text)] text-[var(--site-surface)] border-[var(--site-text)]'
+                          : 'bg-[var(--site-bg)] text-[var(--site-text-muted)] border-[var(--site-border)] hover:border-[var(--site-accent)] hover:text-[var(--site-text)]'
+                      }`}
+                    >
+                      {zoneOption} ({zoneCount})
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-            {curatedRegions.map((region, idx) => (
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-3.5">
+            {filteredRegions.map((region) => (
               <button
                 key={region.name}
                 type="button"
                 onClick={() => onNavigate(`/imoveis?q=${encodeURIComponent(region.name)}`)}
-                className="region-grid-card group w-full text-left bg-[var(--site-bg)] border border-[var(--site-border)] rounded-[var(--site-radius)] overflow-hidden transition-all duration-500 hover:-translate-y-1 hover:border-[var(--site-accent)]/60 hover:shadow-[0_20px_40px_-24px_rgba(20,20,19,0.2)] cursor-pointer flex flex-col"
+                className="region-grid-card group w-full text-left bg-[var(--site-bg)] border border-[var(--site-border)] rounded-[var(--site-radius)] overflow-hidden transition-all duration-300 hover:-translate-y-0.5 hover:border-[var(--site-accent)]/70 hover:shadow-[0_14px_28px_-18px_rgba(20,20,19,0.22)] cursor-pointer flex flex-col"
               >
-                <div className="relative aspect-[16/10] w-full overflow-hidden bg-neutral-900">
-                  <img
-                    src={region.image}
-                    alt={`${region.name}, ${tenant.city}`}
-                    loading="lazy"
-                    referrerPolicy="no-referrer"
-                    className="w-full h-full object-cover transition-transform duration-700 ease-out group-hover:scale-105"
-                  />
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/15 to-transparent" />
-                  <div className="absolute top-3.5 left-4 font-mono text-[11px] tracking-[0.18em] text-white/85">
-                    0{idx + 1}
+                <div className="relative h-28 sm:h-32 w-full overflow-hidden bg-neutral-900">
+                    <img
+                      src={region.image}
+                      alt={`${region.landmark} — ${region.name}, ${tenant.city}`}
+                      loading="lazy"
+                      decoding="async"
+                      referrerPolicy="no-referrer"
+                      className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-105"
+                    />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/25 to-black/15" />
+                  <div className="absolute top-2 left-2.5 right-2.5 flex items-center justify-between gap-1 text-white/85">
+                    <span className="font-mono text-[9px] uppercase tracking-[0.12em] bg-black/45 px-1.5 py-0.5 rounded-[var(--site-radius)] backdrop-blur-[2px]">
+                      {region.zone}
+                    </span>
+                    <ArrowUpRight className="w-3.5 h-3.5 opacity-80 transition-transform duration-300 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 shrink-0" />
                   </div>
-                  <div className="absolute bottom-3.5 left-4 right-4 flex items-end justify-between text-white">
-                    <h3 className="font-editorial text-2xl font-semibold leading-none">
+                  <div className="absolute bottom-2 left-2.5 right-2.5 text-white">
+                    <h3 className="font-editorial text-base sm:text-[17px] font-semibold leading-tight truncate">
                       {region.name}
                     </h3>
-                    <ArrowUpRight className="w-4 h-4 opacity-80 transition-transform duration-300 group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
                   </div>
                 </div>
-                <div className="p-5 flex-1 flex flex-col justify-between gap-3">
-                  <p className="text-xs text-[var(--site-text-muted)] leading-relaxed">
-                    {region.subtitle}
+                <div className="p-2.5 sm:p-3 flex-1 flex flex-col justify-between gap-2">
+                  <p className="text-[11px] font-medium text-[var(--site-text)] leading-snug line-clamp-1">
+                    {region.landmark}
                   </p>
-                  <div className="pt-3 border-t border-[var(--site-border)] flex items-center justify-between text-[11px] text-[var(--site-text-muted)]">
-                    <span className="inline-flex items-center gap-1.5">
-                      <MapPin className="w-3 h-3 text-[var(--site-accent)]" />
-                      {tenant.city}
+                  <div className="pt-1.5 border-t border-[var(--site-border)] flex items-center justify-between gap-1.5 text-[10px] text-[var(--site-text-muted)]">
+                    <span className="inline-flex items-center gap-1 truncate">
+                      <MapPin className="w-2.5 h-2.5 text-[var(--site-accent)] shrink-0" />
+                      <span className="truncate">{tenant.city}</span>
                     </span>
-                    <span className="font-mono tabular-nums text-[var(--site-text)]">
+                    <span className="font-mono tabular-nums text-[var(--site-text)] shrink-0">
                       {region.count > 0
                         ? `${region.count} ${region.count === 1 ? 'imóvel' : 'imóveis'}`
-                        : 'Explorar região'}
+                        : 'Explorar'}
                     </span>
                   </div>
                 </div>
@@ -702,8 +1015,28 @@ export function HomePage({ onNavigate }: HomePageProps) {
             </div>
           </div>
 
-          <div className="lg:col-span-7">
-            <ArchitecturalPavilionCanvas />
+          <div ref={threeHostRef} className="lg:col-span-7">
+            {shouldMount3D ? (
+              <Suspense
+                fallback={
+                  <div className="h-[380px] sm:h-[460px] lg:h-[500px] w-full border border-[var(--site-border)] rounded-[var(--site-radius)] bg-[var(--site-surface)] flex items-center justify-center">
+                    <div className="w-7 h-7 border-2 border-[var(--site-accent)] border-t-transparent rounded-full animate-spin" />
+                  </div>
+                }
+              >
+                <ArchitecturalPavilionCanvas />
+              </Suspense>
+            ) : (
+              <div className="h-[380px] sm:h-[460px] lg:h-[500px] w-full border border-[var(--site-border)] rounded-[var(--site-radius)] bg-[var(--site-surface)] overflow-hidden relative">
+                <img
+                  src="/src/assets/images/hero_penthouse_living_1795532252931.jpg"
+                  alt="Prévia da maquete arquitetônica interativa"
+                  loading="lazy"
+                  decoding="async"
+                  className="w-full h-full object-cover opacity-85"
+                />
+              </div>
+            )}
           </div>
         </div>
       </section>

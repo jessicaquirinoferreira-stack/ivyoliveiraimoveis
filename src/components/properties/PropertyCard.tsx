@@ -35,6 +35,7 @@ export function PropertyCard({ property, onOpen }: PropertyCardProps) {
             src={cover}
             alt={property.title}
             loading="lazy"
+            decoding="async"
             referrerPolicy="no-referrer"
             className="w-full h-full object-cover transition-transform duration-700 ease-out will-change-transform group-hover:scale-[1.06]"
           />

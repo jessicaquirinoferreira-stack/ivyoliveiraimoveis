@@ -172,6 +172,195 @@ body {
   animation: tour-fade-in 420ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/* 6-Second Realistic Cinematic Architectural Intro (GPU-composited) */
+@keyframes intro-camera-push {
+  0% {
+    transform: scale(0.975) translate3d(0, 6px, 0);
+  }
+  100% {
+    transform: scale(1.02) translate3d(0, -4px, 0);
+  }
+}
+
+@keyframes intro-stroke-draw {
+  0% {
+    stroke-dashoffset: 101;
+    opacity: 0.15;
+  }
+  10% {
+    opacity: 1;
+  }
+  100% {
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+}
+
+@keyframes intro-fade-bloom {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes intro-glass-sweep {
+  0% {
+    transform: translateX(-160px) skewX(-18deg);
+    opacity: 0;
+  }
+  20% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(620px) skewX(-18deg);
+    opacity: 0;
+  }
+}
+
+@keyframes intro-name-write {
+  0% {
+    clip-path: inset(0 100% 0 0);
+    opacity: 0.2;
+    letter-spacing: 0.08em;
+  }
+  12% {
+    opacity: 1;
+  }
+  100% {
+    clip-path: inset(0 0% 0 0);
+    opacity: 1;
+    letter-spacing: 0.03em;
+  }
+}
+
+@keyframes intro-pen-cursor {
+  0% {
+    left: 0%;
+    opacity: 0;
+  }
+  8% {
+    opacity: 0.95;
+  }
+  90% {
+    opacity: 0.9;
+  }
+  100% {
+    left: 100%;
+    opacity: 0;
+  }
+}
+
+@keyframes intro-rule-grow {
+  0% {
+    transform: scaleX(0);
+    opacity: 0;
+  }
+  100% {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+}
+
+@keyframes intro-sub-fade {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.intro-camera-stage {
+  animation: intro-camera-push 5.8s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  will-change: transform;
+}
+
+.intro-draw {
+  stroke-dasharray: 101;
+  stroke-dashoffset: 101;
+  animation-name: intro-stroke-draw;
+  animation-timing-function: cubic-bezier(0.32, 0.08, 0.24, 1);
+  animation-fill-mode: forwards;
+}
+
+.intro-draw-1 {
+  animation-duration: 1.15s;
+  animation-delay: 0.1s;
+}
+.intro-draw-2 {
+  animation-duration: 1.35s;
+  animation-delay: 0.35s;
+}
+.intro-draw-3 {
+  animation-duration: 1.35s;
+  animation-delay: 0.75s;
+}
+.intro-draw-4 {
+  animation-duration: 1.25s;
+  animation-delay: 1.15s;
+}
+.intro-draw-5 {
+  animation-duration: 1.25s;
+  animation-delay: 1.5s;
+}
+.intro-draw-6 {
+  animation-duration: 1.15s;
+  animation-delay: 1.85s;
+}
+
+.intro-light-bloom {
+  opacity: 0;
+  animation: intro-fade-bloom 1.9s cubic-bezier(0.22, 1, 0.36, 1) 1.45s forwards;
+}
+
+.intro-material-reveal {
+  opacity: 0;
+  animation: intro-fade-bloom 1.8s cubic-bezier(0.22, 1, 0.36, 1) 1.65s forwards;
+}
+
+.intro-glass-glint {
+  opacity: 0;
+  animation: intro-glass-sweep 1.85s cubic-bezier(0.22, 1, 0.36, 1) 2.55s forwards;
+}
+
+.intro-glass-glint-delayed {
+  opacity: 0;
+  animation: intro-glass-sweep 1.85s cubic-bezier(0.22, 1, 0.36, 1) 2.9s forwards;
+}
+
+.intro-brand-write {
+  clip-path: inset(0 100% 0 0);
+  animation: intro-name-write 2.05s cubic-bezier(0.25, 0.1, 0.2, 1) 2.45s forwards;
+  will-change: clip-path, opacity;
+}
+
+.intro-write-cursor {
+  left: 0%;
+  opacity: 0;
+  animation: intro-pen-cursor 2.05s cubic-bezier(0.25, 0.1, 0.2, 1) 2.45s forwards;
+  will-change: left, opacity;
+}
+
+.intro-rule-expand {
+  transform: scaleX(0);
+  opacity: 0;
+  animation: intro-rule-grow 0.9s cubic-bezier(0.22, 1, 0.36, 1) 4.05s forwards;
+  will-change: transform, opacity;
+}
+
+.intro-subtitle-reveal {
+  opacity: 0;
+  animation: intro-sub-fade 0.85s cubic-bezier(0.22, 1, 0.36, 1) 4.25s forwards;
+  will-change: transform, opacity;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;

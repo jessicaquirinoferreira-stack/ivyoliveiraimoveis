@@ -167,10 +167,24 @@ function sanitizeThemePreset(val: unknown): ThemePresetId {
   return DEFAULT_TENANT.themePreset;
 }
 
+const LEGACY_DEFAULT_REGIONS = [
+  'Zona Sul',
+  'Barra da Tijuca',
+  'São Conrado',
+  'Lagoa',
+  'Leblon',
+  'Ipanema',
+];
+
+function isLegacyDefaultRegions(regions: unknown): boolean {
+  if (!Array.isArray(regions) || regions.length !== LEGACY_DEFAULT_REGIONS.length) return false;
+  return LEGACY_DEFAULT_REGIONS.every((item, idx) => regions[idx] === item);
+}
+
 /**
  * Merges a persisted Firestore tenant document with safe baseline defaults ONLY when a field
- * is genuinely undefined (missing in legacy documents), never overwriting intentional admin edits
- * or cleared fields.
+ * is genuinely undefined (or matches an unconfigured initial empty seed), never overwriting
+ * intentional admin edits.
  */
 function hydrateTenantDocument(loaded: Partial<Tenant>, tenantId: string): Tenant {
   const base = tenantId === DEFAULT_TENANT_ID ? DEFAULT_TENANT : { ...DEFAULT_TENANT, id: tenantId };
@@ -184,6 +198,39 @@ function hydrateTenantDocument(loaded: Partial<Tenant>, tenantId: string): Tenan
     return val;
   };
 
+  const isDefaultTenant = tenantId === DEFAULT_TENANT_ID;
+  const resolvedRegions =
+    Array.isArray(loaded.regions) && loaded.regions.length > 0 && !(isDefaultTenant && isLegacyDefaultRegions(loaded.regions))
+      ? loaded.regions
+      : base.regions;
+
+  const resolvedCreci =
+    loaded.creci && loaded.creci.trim()
+      ? loaded.creci
+      : isDefaultTenant
+        ? base.creci
+        : loaded.creci ?? '';
+  const resolvedWhatsapp =
+    loaded.whatsapp && loaded.whatsapp.trim()
+      ? loaded.whatsapp
+      : isDefaultTenant
+        ? base.whatsapp
+        : loaded.whatsapp ?? '';
+  const resolvedPhone =
+    loaded.phone && loaded.phone.trim()
+      ? loaded.phone
+      : isDefaultTenant
+        ? base.phone
+        : loaded.phone ?? '';
+  const resolvedEmail =
+    loaded.email &&
+    loaded.email.trim() &&
+    !(isDefaultTenant && loaded.email.trim().toLowerCase() === 'ivyimoveisrj@gmail.com')
+      ? loaded.email
+      : isDefaultTenant
+        ? base.email
+        : loaded.email ?? '';
+
   return {
     ...base,
     ...loaded,
@@ -193,10 +240,14 @@ function hydrateTenantDocument(loaded: Partial<Tenant>, tenantId: string): Tenan
       ...presetConfig,
       ...(isPlainObject(loaded.themeConfig) ? loaded.themeConfig : {}),
     },
+    creci: resolvedCreci,
+    whatsapp: resolvedWhatsapp,
+    phone: resolvedPhone,
+    email: resolvedEmail,
     logoUrl: sanitizeLegacyUrl(loaded.logoUrl, base.logoUrl),
     faviconUrl: sanitizeLegacyUrl(loaded.faviconUrl, base.faviconUrl),
     aboutPhotoUrl: loaded.aboutPhotoUrl !== undefined ? loaded.aboutPhotoUrl : base.aboutPhotoUrl,
-    regions: Array.isArray(loaded.regions) ? loaded.regions : base.regions,
+    regions: resolvedRegions,
     heroImages: Array.isArray(loaded.heroImages) ? loaded.heroImages : base.heroImages,
     specialties: Array.isArray(loaded.specialties) ? loaded.specialties : base.specialties,
     differentials: Array.isArray(loaded.differentials) ? loaded.differentials : base.differentials,
@@ -222,7 +273,7 @@ function buildSanitizedTenantFields(source: Partial<Tenant>, fallback: Tenant = 
     creci: clampStr(source.creci ?? fallback.creci ?? '', 60),
     city: clampReqStr(source.city ?? fallback.city, 80, DEFAULT_TENANT.city),
     state: clampStr(source.state ?? fallback.state ?? '', 20),
-    regions: clampStrArray(source.regions ?? fallback.regions ?? [], 30, 80),
+    regions: clampStrArray(source.regions ?? fallback.regions ?? [], 50, 80),
     whatsapp: clampStr(source.whatsapp ?? fallback.whatsapp ?? '', 30),
     phone: clampStr(source.phone ?? fallback.phone ?? '', 30),
     email: clampStr(source.email ?? fallback.email ?? '', 200),
@@ -364,10 +415,17 @@ export async function bootstrapUserAndTenant(user: User): Promise<{
       const rawExisting = tenantSnap.data() as Partial<Tenant> & { createdAt?: unknown };
       tenant = hydrateTenantDocument(rawExisting, profile.tenantId);
 
-      // Auto-heal broken legacy placeholder URLs, missing theme config, or legacy invalid id/ownerUid/createdAt
+      // Auto-heal broken legacy placeholder URLs, missing theme config, unconfigured contact/regions, or legacy invalid id/ownerUid/createdAt
       const hasLegacyBrokenUrl =
         (typeof rawExisting.logoUrl === 'string' && rawExisting.logoUrl.includes('wxmntYHq')) ||
         (typeof rawExisting.faviconUrl === 'string' && rawExisting.faviconUrl.includes('wxmntYHq'));
+      const needsDefaultContactOrRegions =
+        profile.tenantId === DEFAULT_TENANT_ID &&
+        (!rawExisting.creci?.trim() ||
+          !rawExisting.whatsapp?.trim() ||
+          !rawExisting.email?.trim() ||
+          rawExisting.email.trim().toLowerCase() === 'ivyimoveisrj@gmail.com' ||
+          isLegacyDefaultRegions(rawExisting.regions));
       const missingCoreStructure =
         !rawExisting.themeConfig ||
         !rawExisting.themePreset ||
@@ -377,7 +435,7 @@ export async function bootstrapUserAndTenant(user: User): Promise<{
         !isValidFirestoreTimestamp(rawExisting.createdAt) ||
         !isValidSlugStr(rawExisting.slug);
 
-      if (isBootAdmin && (hasLegacyBrokenUrl || missingCoreStructure)) {
+      if (isBootAdmin && (hasLegacyBrokenUrl || needsDefaultContactOrRegions || missingCoreStructure)) {
         const sanitizedFields = buildSanitizedTenantFields(tenant, DEFAULT_TENANT);
         const preservedSlug = isValidSlugStr(rawExisting.slug)
           ? rawExisting.slug

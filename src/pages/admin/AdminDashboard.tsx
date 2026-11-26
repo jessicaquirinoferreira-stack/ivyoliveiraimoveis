@@ -1055,7 +1055,7 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
     try {
       const updatedFields: Partial<Tenant> = {
         ...brandForm,
-        regions: regionsInput.split(',').map((s) => s.trim()).filter(Boolean).slice(0, 30),
+        regions: regionsInput.split(',').map((s) => s.trim()).filter(Boolean).slice(0, 50),
         specialties: specialtiesInput.split('\n').map((s) => s.trim()).filter(Boolean).slice(0, 20),
         differentials: (brandForm.differentials || [])
           .filter((d) => d.title.trim() || d.description.trim())
